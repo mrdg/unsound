@@ -8,3 +8,4 @@ edition = "2018"
 
 [dependencies]
 portaudio = "0.7.0"
+hound = "3.4.0"

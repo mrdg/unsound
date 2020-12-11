@@ -16,18 +16,18 @@ impl Instrument for Synth {
             }
         }
     }
+
+    fn render(&mut self, buffer: &mut [f32]) {
+        for voice in &mut self.voices {
+            voice.render(buffer);
+        }
+    }
 }
 
 impl Synth {
     pub fn new() -> Synth {
         Synth {
             voices: vec![Voice::new(), Voice::new(), Voice::new(), Voice::new()],
-        }
-    }
-
-    pub fn render(&mut self, buffer: &mut [f32]) {
-        for voice in &mut self.voices {
-            voice.render(buffer);
         }
     }
 
@@ -95,7 +95,7 @@ impl Voice {
             if self.osc.phase >= TWO_PI {
                 self.osc.phase -= TWO_PI
             }
-            buffer[i] += (sample * self.env.value()) as f32;
+            buffer[i] += (sample * self.env.value() * 0.1) as f32;
         }
     }
 
