@@ -9,3 +9,6 @@ edition = "2018"
 [dependencies]
 portaudio = "0.7.0"
 hound = "3.4.0"
+tui = "0.13"
+termion = "1.5"
+ringbuf = "0.2.2"
