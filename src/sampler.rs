@@ -2,8 +2,8 @@ use crate::env::{Envelope, State as EnvelopeState};
 use crate::param::{Param, ParamKey, Unit};
 use crate::seq::{Event, Instrument};
 use crate::SAMPLE_RATE;
+use anyhow::{Context, Result};
 use hound::{WavReader, WavSpec};
-use std::error::Error;
 use std::ops::{Add, Mul};
 
 const ROOT_PITCH: i32 = 48;
@@ -50,13 +50,14 @@ pub struct Sampler {
 }
 
 impl Sampler {
-    pub fn with_sample(path: &str) -> Result<Sampler, Box<dyn Error>> {
+    pub fn with_sample(path: &str) -> Result<Sampler> {
         let num_voices = 8;
         let mut voices = Vec::with_capacity(num_voices);
         for _ in 0..num_voices {
             voices.push(Voice::new());
         }
-        let (wav_spec, samples, offset) = Self::load_sound(String::from(path))?;
+        let (wav_spec, samples, offset) =
+            Self::load_sound(String::from(path)).context("Loading sound")?;
         let sampler = Sampler {
             sample_rate: wav_spec.sample_rate,
             voices,
@@ -71,7 +72,7 @@ impl Sampler {
         Ok(sampler)
     }
 
-    fn load_sound(path: String) -> Result<(WavSpec, Vec<Frame>, usize), Box<dyn Error>> {
+    fn load_sound(path: String) -> Result<(WavSpec, Vec<Frame>, usize)> {
         let mut wav = WavReader::open(path.clone())?;
         let wav_spec = wav.spec();
         let bit_depth = wav_spec.bits_per_sample as f32;
@@ -174,7 +175,7 @@ fn gain_factor(db: f32) -> f32 {
 }
 
 impl Instrument for Sampler {
-    fn set_param(&mut self, key: ParamKey, p: Param) -> Result<(), Box<dyn Error>> {
+    fn set_param(&mut self, key: ParamKey, p: Param) -> Result<()> {
         match key {
             ParamKey::Amp => self.amp = p.val,
             ParamKey::AmpEnvAttack => self.amp_env_attack = p.val,

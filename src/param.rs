@@ -1,4 +1,4 @@
-use std::error::Error;
+use anyhow::{anyhow, Result};
 
 #[derive(Copy, Clone)]
 pub enum Unit {
@@ -40,10 +40,14 @@ impl Param {
         self.val = f32::max(self.val - self.step, self.min);
     }
 
-    pub fn set_from_string(&mut self, s: String) -> Result<(), Box<dyn Error>> {
+    pub fn set_from_string(&mut self, s: String) -> Result<()> {
         let new_val = s.parse()?;
         if new_val > self.max || new_val < self.min {
-            return Err(format!("value must be between {} and {}", self.min, self.max).into());
+            return Err(anyhow!(
+                "value must be between {} and {}",
+                self.min,
+                self.max
+            ));
         }
         self.val = new_val;
         Ok(())

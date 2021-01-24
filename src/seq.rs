@@ -1,7 +1,7 @@
 use crate::app::HostState;
 use crate::param::{Param, ParamKey};
 use crate::SAMPLE_RATE;
-use std::error::Error;
+use anyhow::Result;
 
 const MAX_INSTRUMENTS: usize = 32;
 const MAX_PATTERN_LENGTH: usize = 512;
@@ -18,7 +18,7 @@ pub enum Event {
 pub trait Instrument {
     fn send_event(&mut self, column: usize, event: &Event);
     fn render(&mut self, buffer: &mut [(f32, f32)]);
-    fn set_param(&mut self, key: ParamKey, value: Param) -> Result<(), Box<dyn Error>>;
+    fn set_param(&mut self, key: ParamKey, value: Param) -> Result<()>;
 }
 
 #[derive(Debug)]

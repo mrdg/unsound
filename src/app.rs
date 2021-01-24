@@ -1,9 +1,9 @@
 use crate::param::{Param, ParamKey};
 use crate::sampler::Sampler;
 use crate::seq::{Event, Instrument, Pattern, Slot};
+use anyhow::{anyhow, Result};
 use ringbuf::{Consumer, Producer, RingBuffer};
 use std::cmp;
-use std::error::Error;
 
 pub struct HostState {
     updates: Consumer<HostUpdate>,
@@ -87,7 +87,7 @@ impl ClientState {
         }
     }
 
-    pub fn take(&mut self, action: Action) -> Result<(), Box<dyn Error>> {
+    pub fn take(&mut self, action: Action) -> Result<()> {
         match action {
             Action::Exit => {
                 self.is_playing = false;
@@ -143,7 +143,7 @@ impl ClientState {
         Ok(())
     }
 
-    fn load_sound(&mut self, index: usize, path: &str) -> Result<(), Box<dyn Error>> {
+    fn load_sound(&mut self, index: usize, path: &str) -> Result<()> {
         let sampler = Sampler::with_sample(path)?;
         self.instruments.push(InstrumentState {
             name: String::from(path),
@@ -152,10 +152,12 @@ impl ClientState {
         self.update_host(HostUpdate::PutInstrument(index, Box::new(sampler)))
     }
 
-    fn update_host(&mut self, update: HostUpdate) -> Result<(), Box<dyn Error>> {
-        self.host_state
-            .push(update)
-            .map_err(|_| "unable to send message to host".into())
+    fn update_host(&mut self, update: HostUpdate) -> Result<()> {
+        if self.host_state.push(update).is_err() {
+            Err(anyhow!("unable to send message to host"))
+        } else {
+            Ok(())
+        }
     }
 }
 

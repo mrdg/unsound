@@ -4,7 +4,7 @@ mod state;
 use crate::app::ClientState;
 use crate::ui::editor::Editor;
 use crate::ui::state::{CommandState, EditMode, ViewState};
-use std::error::Error;
+use anyhow::Result;
 use std::io;
 use std::sync::mpsc;
 use std::thread;
@@ -34,7 +34,7 @@ enum Input {
 }
 
 impl Ui {
-    pub fn new(state: ClientState) -> Result<Self, Box<dyn Error>> {
+    pub fn new(state: ClientState) -> Result<Self> {
         let (sender, receiver) = mpsc::channel();
         {
             let sender = sender.clone();
@@ -60,7 +60,7 @@ impl Ui {
         })
     }
 
-    pub fn run(mut self) -> Result<(), Box<dyn Error>> {
+    pub fn run(mut self) -> Result<()> {
         let stdout = io::stdout().into_raw_mode()?;
         let stdout = MouseTerminal::from(stdout);
         let stdout = AlternateScreen::from(stdout);

@@ -1,16 +1,16 @@
 use crate::app::HostState;
 use crate::seq::{Block, Sequencer};
 use crate::{FRAMES_PER_BUFFER, SAMPLE_RATE};
+use anyhow::Result;
 use portaudio::stream_flags as paflags;
 use portaudio::{OutputStreamCallbackArgs, PortAudio};
-use std::error::Error;
 
 pub struct Host {
     stream: portaudio::Stream<portaudio::NonBlocking, portaudio::Output<f32>>,
 }
 
 impl Host {
-    pub fn run(mut state: HostState) -> Result<Host, Box<dyn Error>> {
+    pub fn run(mut state: HostState) -> Result<Host> {
         let mut buf = [(0., 0.); FRAMES_PER_BUFFER as usize];
         let mut seq = Sequencer::new();
         let pa = PortAudio::new()?;

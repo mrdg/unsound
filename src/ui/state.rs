@@ -1,7 +1,7 @@
 use crate::app::{Action, ClientState};
 use crate::ui::editor::EditorState;
 use crate::ui::ListCursorExt;
-use std::error::Error;
+use anyhow::{anyhow, Result};
 use termion::event::Key;
 use tui::widgets::ListState;
 
@@ -54,7 +54,7 @@ impl ViewState {
         }
     }
 
-    pub fn handle_input(&mut self, key: Key) -> Result<(), Box<dyn Error>> {
+    pub fn handle_input(&mut self, key: Key) -> Result<()> {
         match key {
             Key::Ctrl('w') => match self.focus {
                 Focus::Params => {
@@ -105,33 +105,33 @@ impl ViewState {
         Ok(())
     }
 
-    fn handle_command_input(&mut self, key: Key) -> Result<(), Box<dyn Error>> {
+    fn handle_command_input(&mut self, key: Key) -> Result<()> {
         match key {
             Key::Char('\n') => self.exec_command()?,
             Key::Char(char) => self.command.buffer.push(char),
             Key::Esc => self.command.buffer.clear(),
-            _ => return Err(format!("invalid command input: {:?}", key).into()),
+            _ => return Err(anyhow!("invalid command input: {:?}", key)),
         };
         Ok(())
     }
 
-    fn exec_command(&mut self) -> Result<(), Box<dyn Error>> {
+    fn exec_command(&mut self) -> Result<()> {
         let parts: Vec<&str> = self.command.buffer.split(" ").collect();
         if parts.len() == 0 {
-            return Err("invalid command".into());
+            return Err(anyhow!("invalid command"));
         }
 
         let action = match parts[0] {
             "quit" | "exit" => Action::Exit,
             "addtrack" => Action::AddTrack(parts[1].to_string()),
-            _ => return Err(format!("invalid command {}", parts[0]).into()),
+            _ => return Err(anyhow!("invalid command {}", parts[0])),
         };
 
         self.command.buffer.clear();
         self.app.take(action)
     }
 
-    fn handle_editor_input(&mut self, key: Key) -> Result<(), Box<dyn Error>> {
+    fn handle_editor_input(&mut self, key: Key) -> Result<()> {
         if let Some(first_key) = self.editor.pending_key {
             match (first_key, key) {
                 (Key::Char('r'), Key::Char(char)) => {
@@ -172,7 +172,7 @@ impl ViewState {
         Ok(())
     }
 
-    fn put_note(&mut self, key: char) -> Result<(), Box<dyn Error>> {
+    fn put_note(&mut self, key: char) -> Result<()> {
         let pitch = match key {
             'z' => 0,
             's' => 1,
@@ -210,7 +210,7 @@ impl ViewState {
         }
     }
 
-    fn delete_note(&mut self) -> Result<(), Box<dyn Error>> {
+    fn delete_note(&mut self) -> Result<()> {
         let result = self.app.take(Action::DeleteNote(self.editor.cursor));
         self.move_cursor(Cursor::Down);
         result
