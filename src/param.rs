@@ -1,4 +1,21 @@
+use crate::app::HostParam;
+use crate::sampler::SamplerParam;
 use anyhow::{anyhow, Result};
+
+#[derive(Copy, Clone, PartialEq)]
+pub enum ParamKey {
+    Host(HostParam),
+    Sampler(SamplerParam),
+}
+
+impl std::fmt::Display for ParamKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Self::Sampler(param) => param.fmt(f),
+            _ => Ok(()),
+        }
+    }
+}
 
 #[derive(Copy, Clone)]
 pub enum Unit {
@@ -32,24 +49,23 @@ impl Param {
         *self
     }
 
-    pub fn up(&mut self) {
+    pub fn inc(&mut self) {
         self.val = f32::min(self.val + self.step, self.max);
     }
 
-    pub fn down(&mut self) {
+    pub fn dec(&mut self) {
         self.val = f32::max(self.val - self.step, self.min);
     }
 
-    pub fn set_from_string(&mut self, s: String) -> Result<()> {
-        let new_val = s.parse()?;
-        if new_val > self.max || new_val < self.min {
+    pub fn set(&mut self, value: f32) -> Result<()> {
+        if value > self.max || value < self.min {
             return Err(anyhow!(
                 "value must be between {} and {}",
                 self.min,
                 self.max
             ));
         }
-        self.val = new_val;
+        self.val = value;
         Ok(())
     }
 }
@@ -71,29 +87,5 @@ impl std::fmt::Display for Param {
         } else {
             write!(f, "{:.2}", self.val)
         }
-    }
-}
-
-#[derive(Copy, Clone)]
-pub enum ParamKey {
-    Amp,
-    AmpEnvAttack,
-    AmpEnvDecay,
-    AmpEnvSustain,
-    AmpEnvRelease,
-    SampleOffset,
-}
-
-impl std::fmt::Display for ParamKey {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        let s = match self {
-            Self::Amp => "Amp",
-            Self::SampleOffset => "Sample Offset",
-            Self::AmpEnvAttack => "Amp Env Attack",
-            Self::AmpEnvDecay => "Amp Env Decay",
-            Self::AmpEnvSustain => "Amp Env Sustain",
-            Self::AmpEnvRelease => "Amp Env Release",
-        };
-        write!(f, "{}", s)
     }
 }

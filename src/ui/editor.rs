@@ -1,4 +1,4 @@
-use crate::app::ClientState;
+use crate::app::{ClientState, HostParam};
 use crate::seq::{Event, Pattern, Slot};
 use termion::event::Key;
 
@@ -43,7 +43,7 @@ impl<'a> Editor<'a> {
             pattern: &state.current_pattern,
             note_names: note_names(),
             num_tracks: state.instruments.len(),
-            lines_per_beat: state.lines_per_beat,
+            lines_per_beat: state.host_param(HostParam::LinesPerBeat) as usize,
             current_line: state.current_line,
         }
     }

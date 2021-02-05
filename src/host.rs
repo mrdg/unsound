@@ -1,9 +1,15 @@
 use crate::app::HostState;
-use crate::seq::{Block, Sequencer};
+use crate::param::ParamKey;
+use crate::seq::{Block, Event, Sequencer};
 use crate::{FRAMES_PER_BUFFER, SAMPLE_RATE};
 use anyhow::Result;
 use portaudio::stream_flags as paflags;
 use portaudio::{OutputStreamCallbackArgs, PortAudio};
+pub trait Instrument {
+    fn send_event(&mut self, column: usize, event: &Event);
+    fn render(&mut self, buffer: &mut [(f32, f32)]);
+    fn set_param(&mut self, key: ParamKey, value: f32) -> Result<()>;
+}
 
 pub struct Host {
     stream: portaudio::Stream<portaudio::NonBlocking, portaudio::Output<f32>>,

@@ -1,9 +1,11 @@
+use crate::host::Instrument;
 use crate::param::{Param, ParamKey};
 use crate::sampler::Sampler;
-use crate::seq::{Event, Instrument, Pattern, Slot};
+use crate::seq::{Event, Pattern, Slot};
 use anyhow::{anyhow, Result};
 use ringbuf::{Consumer, Producer, RingBuffer};
-use std::cmp;
+use std::collections::HashMap;
+use std::{borrow::BorrowMut, cmp};
 
 pub struct HostState {
     updates: Consumer<HostUpdate>,
@@ -12,9 +14,7 @@ pub struct HostState {
     pub track_mapping: Vec<Option<Box<dyn Instrument>>>,
     pub current_pattern: Pattern,
     pub is_playing: bool,
-    pub octave: usize,
-    pub lines_per_beat: usize,
-    pub bpm: u16,
+    pub params: HashMap<HostParam, f32>,
 }
 
 impl HostState {
@@ -30,12 +30,20 @@ impl HostState {
                 HostUpdate::PutPatternEvent { event, slot } => {
                     self.current_pattern.add_event(event, slot);
                 }
-                HostUpdate::ParamSetValue(instrument, key, value) => {
-                    let instrument = &mut self.track_mapping[instrument];
-                    match instrument {
-                        Some(instr) => instr.set_param(key, value).expect("set param"),
-                        None => {}
-                    }
+                HostUpdate::SetParamValue(index, key, value) => {
+                    match key {
+                        ParamKey::Host(param) => {
+                            self.params.insert(param, value);
+                        }
+                        ParamKey::Sampler(_) => {
+                            let index = index.unwrap();
+                            let instrument = &mut self.track_mapping[index];
+                            match instrument {
+                                Some(instr) => instr.set_param(key, value).expect("set param"),
+                                None => {}
+                            }
+                        }
+                    };
                 }
             }
         }
@@ -52,11 +60,24 @@ impl HostState {
     }
 }
 
+pub enum ParamUpdate {
+    Inc,
+    Dec,
+    Set(String),
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, Hash)]
+pub enum HostParam {
+    Bpm,
+    Octave,
+    LinesPerBeat,
+}
+
 pub enum HostUpdate {
     PutInstrument(usize, Box<dyn Instrument>),
     TogglePlay,
     PutPatternEvent { event: Event, slot: Slot },
-    ParamSetValue(usize, ParamKey, Param),
+    SetParamValue(Option<usize>, ParamKey, f32),
 }
 
 pub struct InstrumentState {
@@ -73,9 +94,7 @@ pub struct ClientState {
     pub instruments: Vec<InstrumentState>,
     pub is_playing: bool,
     pub should_stop: bool,
-    pub octave: i32,
-    pub lines_per_beat: usize,
-    pub bpm: u16,
+    params: HashMap<HostParam, Param>,
 }
 
 impl ClientState {
@@ -87,6 +106,10 @@ impl ClientState {
         }
     }
 
+    pub fn host_param(&self, param: HostParam) -> f32 {
+        self.params.get(&param).unwrap().val
+    }
+
     pub fn take(&mut self, action: Action) -> Result<()> {
         match action {
             Action::Exit => {
@@ -94,7 +117,12 @@ impl ClientState {
                 self.should_stop = true;
             }
             Action::AddTrack(path) => {
-                self.load_sound(0, path.as_str())?;
+                let sampler = Sampler::with_sample(path.as_str())?;
+                self.instruments.push(InstrumentState {
+                    name: String::from(path),
+                    params: sampler.params(),
+                });
+                self.update_host(HostUpdate::PutInstrument(0, Box::new(sampler)))?
             }
             Action::PutNote(slot, pitch) => {
                 let pitch = cmp::min(cmp::max(0, pitch), 126);
@@ -117,39 +145,32 @@ impl ClientState {
                 self.is_playing = !self.is_playing;
                 self.update_host(HostUpdate::TogglePlay)?
             }
-            Action::ParamUp(instrument, param) => {
-                if let Some((key, value)) = self
-                    .instruments
-                    .get_mut(instrument)
-                    .and_then(|instr| instr.params.get_mut(param))
-                {
-                    value.up();
-                    let (key, value) = (*key, *value);
-                    self.update_host(HostUpdate::ParamSetValue(instrument, key, value))?
-                }
-            }
-            Action::ParamDown(instrument, param) => {
-                if let Some((key, value)) = self
-                    .instruments
-                    .get_mut(instrument)
-                    .and_then(|instr| instr.params.get_mut(param))
-                {
-                    value.down();
-                    let (key, value) = (*key, *value);
-                    self.update_host(HostUpdate::ParamSetValue(instrument, key, value))?
+            Action::UpdateParam(index, key, update) => {
+                let param = match key {
+                    ParamKey::Sampler(_) => {
+                        let index = index.unwrap();
+                        self.instruments
+                            .get_mut(index)
+                            .and_then(|instr| instr.params.iter_mut().find(|(k, _)| *k == key))
+                            .and_then(|p| Some(p.1.borrow_mut()))
+                    }
+                    ParamKey::Host(key) => self.params.get_mut(&key),
+                };
+                if let Some(param) = param {
+                    match update {
+                        ParamUpdate::Inc => param.inc(),
+                        ParamUpdate::Dec => param.dec(),
+                        ParamUpdate::Set(s) => {
+                            let value = s.parse()?;
+                            param.set(value)?
+                        }
+                    }
+                    let val = param.val;
+                    self.update_host(HostUpdate::SetParamValue(index, key, val))?;
                 }
             }
         }
         Ok(())
-    }
-
-    fn load_sound(&mut self, index: usize, path: &str) -> Result<()> {
-        let sampler = Sampler::with_sample(path)?;
-        self.instruments.push(InstrumentState {
-            name: String::from(path),
-            params: sampler.params(),
-        });
-        self.update_host(HostUpdate::PutInstrument(index, Box::new(sampler)))
     }
 
     fn update_host(&mut self, update: HostUpdate) -> Result<()> {
@@ -168,6 +189,12 @@ pub enum ClientUpdate {
 pub fn new() -> (HostState, ClientState) {
     let (host_prod, host_cons) = RingBuffer::<HostUpdate>::new(16).split();
     let (client_prod, client_cons) = RingBuffer::<ClientUpdate>::new(16).split();
+
+    let mut params = HashMap::new();
+    params.insert(HostParam::Bpm, Param::new(1.0, 120.0, 300.0, 1.0));
+    params.insert(HostParam::Octave, Param::new(1.0, 4.0, 6.0, 1.0));
+    params.insert(HostParam::LinesPerBeat, Param::new(1.0, 4.0, 16.0, 1.0));
+
     (
         HostState {
             updates: host_cons,
@@ -175,9 +202,7 @@ pub fn new() -> (HostState, ClientState) {
             track_mapping: Vec::with_capacity(32),
             current_pattern: Pattern::new(),
             is_playing: false,
-            octave: 4,
-            bpm: 120,
-            lines_per_beat: 4,
+            params: params.iter().map(|(k, v)| (*k, v.val)).collect(),
         },
         ClientState {
             updates: client_cons,
@@ -187,9 +212,7 @@ pub fn new() -> (HostState, ClientState) {
             current_pattern: Pattern::new(),
             is_playing: false,
             should_stop: false,
-            octave: 4,
-            bpm: 120,
-            lines_per_beat: 4,
+            params: params,
         },
     )
 }
@@ -201,6 +224,5 @@ pub enum Action {
     DeleteNote(Slot),
     ChangePitch(Slot, i32),
     TogglePlay,
-    ParamUp(usize, usize),
-    ParamDown(usize, usize),
+    UpdateParam(Option<usize>, ParamKey, ParamUpdate),
 }

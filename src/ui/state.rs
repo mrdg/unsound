@@ -1,4 +1,5 @@
-use crate::app::{Action, ClientState};
+use crate::app::{Action, ClientState, HostParam, ParamUpdate};
+use crate::param::ParamKey;
 use crate::ui::editor::EditorState;
 use crate::ui::ListCursorExt;
 use anyhow::{anyhow, Result};
@@ -87,15 +88,19 @@ impl ViewState {
                     Key::Char('j') => self.params.next(instrument.params.len()),
                     Key::Char('k') => self.params.prev(instrument.params.len()),
                     Key::Char('J') => {
-                        self.app.take(Action::ParamDown(
-                            self.editor.cursor.track,
-                            self.params.selected().unwrap(),
+                        let (key, _) = instrument.params[self.params.selected().unwrap()];
+                        self.app.take(Action::UpdateParam(
+                            Some(self.editor.cursor.track),
+                            key,
+                            ParamUpdate::Dec,
                         ))?;
                     }
                     Key::Char('K') => {
-                        self.app.take(Action::ParamUp(
-                            self.editor.cursor.track,
-                            self.params.selected().unwrap(),
+                        let (key, _) = instrument.params[self.params.selected().unwrap()];
+                        self.app.take(Action::UpdateParam(
+                            Some(self.editor.cursor.track),
+                            key,
+                            ParamUpdate::Inc,
                         ))?;
                     }
                     _ => {}
@@ -124,6 +129,16 @@ impl ViewState {
         let action = match parts[0] {
             "quit" | "exit" => Action::Exit,
             "addtrack" => Action::AddTrack(parts[1].to_string()),
+            "bpm" => Action::UpdateParam(
+                None,
+                ParamKey::Host(HostParam::Bpm),
+                ParamUpdate::Set(parts[1].to_string()),
+            ),
+            "oct" | "octave" => Action::UpdateParam(
+                None,
+                ParamKey::Host(HostParam::Octave),
+                ParamUpdate::Set(parts[1].to_string()),
+            ),
             _ => return Err(anyhow!("invalid command {}", parts[0])),
         };
 
@@ -188,8 +203,10 @@ impl ViewState {
             'm' => 11,
             _ => return Ok(()),
         };
-        let pitch = self.app.octave * 12 + pitch;
-        let result = self.app.take(Action::PutNote(self.editor.cursor, pitch));
+        let pitch = self.app.host_param(HostParam::Octave) as i32 * 12 + pitch;
+        let result = self
+            .app
+            .take(Action::PutNote(self.editor.cursor, pitch as i32));
         self.move_cursor(Cursor::Down);
         result
     }

@@ -1,7 +1,5 @@
-use crate::app::HostState;
-use crate::param::{Param, ParamKey};
+use crate::app::{HostParam, HostState};
 use crate::SAMPLE_RATE;
-use anyhow::Result;
 
 const MAX_INSTRUMENTS: usize = 32;
 const MAX_PATTERN_LENGTH: usize = 512;
@@ -13,12 +11,6 @@ pub enum Event {
     Empty,
     NoteOn { pitch: i32 },
     NoteOff { pitch: i32 },
-}
-
-pub trait Instrument {
-    fn send_event(&mut self, column: usize, event: &Event);
-    fn render(&mut self, buffer: &mut [(f32, f32)]);
-    fn set_param(&mut self, key: ParamKey, value: Param) -> Result<()>;
 }
 
 #[derive(Debug)]
@@ -133,8 +125,10 @@ impl Sequencer {
                 }
             }
             self.current_pulse += 1;
+            let bpm = state.params.get(&HostParam::Bpm).unwrap();
+            let lines_per_beat = state.params.get(&HostParam::LinesPerBeat).unwrap();
             let num_samples =
-                (SAMPLE_RATE * 60.) / (state.lines_per_beat * state.bpm as usize) as f64;
+                (SAMPLE_RATE * 60.) / (*lines_per_beat as usize * *bpm as usize) as f64;
             self.samples_to_next_pulse = num_samples.round() as usize;
             state.set_current_line(line as usize);
         }

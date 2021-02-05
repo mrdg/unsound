@@ -1,7 +1,7 @@
 mod editor;
 mod state;
 
-use crate::app::ClientState;
+use crate::app::{ClientState, HostParam};
 use crate::ui::editor::Editor;
 use crate::ui::state::{CommandState, EditMode, ViewState};
 use anyhow::Result;
@@ -177,15 +177,15 @@ impl Ui {
 struct StatusLine {
     bpm: u16,
     lines_per_beat: usize,
-    octave: i32,
+    octave: u8,
 }
 
 impl StatusLine {
     fn new(state: &ClientState) -> Self {
         Self {
-            bpm: state.bpm,
-            lines_per_beat: state.lines_per_beat,
-            octave: state.octave,
+            bpm: state.host_param(HostParam::Bpm) as u16,
+            lines_per_beat: state.host_param(HostParam::LinesPerBeat) as usize,
+            octave: state.host_param(HostParam::Octave) as u8,
         }
     }
 }
