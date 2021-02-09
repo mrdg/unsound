@@ -197,41 +197,37 @@ pub enum Action {
 }
 
 pub struct FileBrowser {
-    listing: Vec<DirEntry>,
+    entries: Vec<DirEntry>,
     current: PathBuf,
 }
 
 impl FileBrowser {
-    fn with_path(path: &str) -> Result<FileBrowser> {
-        let mut listing = Vec::new();
-        for entry in fs::read_dir(path)? {
-            let entry = entry?;
-            listing.push(entry);
-        }
-        let current = PathBuf::from(path);
-        let mut fb = FileBrowser { current, listing };
-        fb.listing.sort_by_key(|e| e.path());
+    pub fn with_path<P: AsRef<Path>>(path: P) -> Result<FileBrowser> {
+        let mut fb = FileBrowser {
+            entries: Vec::new(),
+            current: PathBuf::new(),
+        };
+        fb.move_to(path)?;
         Ok(fb)
     }
 
     pub fn move_to<P: AsRef<Path>>(&mut self, path: P) -> Result<()> {
-        let mut listing = Vec::new();
+        self.entries.clear();
         for entry in fs::read_dir(&path)? {
             let entry = entry?;
-            listing.push(entry);
+            self.entries.push(entry);
         }
         self.current = path.as_ref().to_path_buf();
-        self.listing = listing;
-        self.listing.sort_by_key(|e| e.path());
+        self.entries.sort_by_key(|e| e.path());
         Ok(())
     }
 
     pub fn iter(&self) -> slice::Iter<'_, DirEntry> {
-        self.listing.iter()
+        self.entries.iter()
     }
 
     pub fn get(&self, i: usize) -> Option<PathBuf> {
-        self.listing.get(i).map(|entry| entry.path())
+        self.entries.get(i).map(|entry| entry.path())
     }
 
     pub fn current_dir(&self) -> String {
