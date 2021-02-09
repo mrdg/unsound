@@ -2,6 +2,9 @@ extern crate anyhow;
 extern crate atomic_float;
 extern crate portaudio;
 
+#[macro_use]
+extern crate lazy_static;
+
 mod app;
 mod env;
 mod host;

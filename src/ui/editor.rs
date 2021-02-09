@@ -32,7 +32,6 @@ impl EditorState {
 
 pub struct Editor<'a> {
     pattern: &'a Pattern,
-    note_names: Vec<String>,
     num_tracks: usize,
     lines_per_beat: usize,
     current_line: usize,
@@ -42,7 +41,6 @@ impl<'a> Editor<'a> {
     pub fn new(app: &'a App) -> Self {
         Self {
             pattern: &app.current_pattern,
-            note_names: note_names(),
             num_tracks: app.instruments.len(),
             lines_per_beat: app.host_params.get(HostParam::LinesPerBeat) as usize,
             current_line: app.current_line,
@@ -106,7 +104,7 @@ impl<'a> StatefulWidget for &Editor<'a> {
             for column in 0..self.num_tracks {
                 let event = self.pattern.event_at(line, column);
                 let text = match event {
-                    Event::NoteOn { pitch } => format!(" {} --  ", self.note_names[pitch as usize]),
+                    Event::NoteOn { pitch } => format!(" {} --  ", NOTE_NAMES[pitch as usize]),
                     Event::NoteOff { pitch: _ } => format!(" OFF --  "),
                     Event::Empty => format!(" --- --  "),
                 };
@@ -128,16 +126,17 @@ impl<'a> StatefulWidget for &Editor<'a> {
     }
 }
 
-fn note_names() -> Vec<String> {
-    let names = vec![
-        "C-", "C#", "D-", "D#", "E-", "F-", "F#", "G-", "G#", "A-", "A#", "B-",
-    ];
-    // 0 based octave notation instead of -2 based makes notes easier to read in the editor.
-    (0..127)
-        .map(|pitch| {
-            let octave = pitch / 12;
-            let name = format!("{}{}", names[pitch % 12], octave);
-            name
-        })
-        .collect()
+lazy_static! {
+    static ref NOTE_NAMES: Vec<String> = {
+        let names = vec![
+            "C-", "C#", "D-", "D#", "E-", "F-", "F#", "G-", "G#", "A-", "A#", "B-",
+        ];
+        // 0 based octave notation instead of -2 based makes notes easier to read in the editor.
+        (0..127)
+            .map(|pitch| {
+                let octave = pitch / 12;
+                format!("{}{}", names[pitch % 12], octave)
+            })
+            .collect()
+    };
 }
