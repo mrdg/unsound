@@ -1,6 +1,3 @@
-use crate::app::{HostParam, HostState};
-use crate::SAMPLE_RATE;
-
 const MAX_INSTRUMENTS: usize = 32;
 const MAX_PATTERN_LENGTH: usize = 512;
 const COLUMNS_PER_TRACK: usize = 8;
@@ -69,74 +66,5 @@ impl Pattern {
 
     pub fn event_at(&self, line: usize, track: usize) -> Event {
         self.events[COLUMNS_PER_LINE * line + track * COLUMNS_PER_TRACK]
-    }
-}
-
-pub struct Sequencer {
-    samples_to_next_pulse: usize,
-    current_pulse: i64,
-}
-
-impl Sequencer {
-    pub fn new() -> Sequencer {
-        Sequencer {
-            samples_to_next_pulse: 0,
-            current_pulse: 0,
-        }
-    }
-
-    pub fn next_block(
-        &mut self,
-        block: &mut Block,
-        num_frames: usize,
-        state: &mut HostState,
-    ) -> bool {
-        if !state.is_playing {
-            if block.end == num_frames {
-                return false;
-            }
-            block.end = num_frames;
-            return true;
-        }
-
-        self.samples_to_next_pulse -= block.end - block.start;
-        if block.end == num_frames {
-            return false;
-        }
-        if block.end != 0 {
-            block.start = block.end;
-        }
-
-        let pattern = &state.current_pattern;
-
-        if self.samples_to_next_pulse == 0 {
-            let line = self.current_pulse % pattern.num_lines as i64;
-            let start = line as usize * COLUMNS_PER_LINE;
-            let end = start + COLUMNS_PER_LINE;
-            for column in start..end {
-                let event = &pattern.events[column];
-                if let Event::Empty = event {
-                    continue;
-                }
-                let index = (column - start) / COLUMNS_PER_TRACK;
-                let lane = (column - start) % COLUMNS_PER_TRACK;
-                if let Some(Some(instrument)) = state.track_mapping.get_mut(index) {
-                    instrument.send_event(lane, event);
-                }
-            }
-            self.current_pulse += 1;
-            let bpm = state.params.get(&HostParam::Bpm).unwrap();
-            let lines_per_beat = state.params.get(&HostParam::LinesPerBeat).unwrap();
-            let num_samples =
-                (SAMPLE_RATE * 60.) / (*lines_per_beat as usize * *bpm as usize) as f64;
-            self.samples_to_next_pulse = num_samples.round() as usize;
-            state.set_current_line(line as usize);
-        }
-
-        block.end = block.start + self.samples_to_next_pulse;
-        if block.end > num_frames {
-            block.end = num_frames;
-        }
-        true
     }
 }

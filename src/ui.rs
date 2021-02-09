@@ -1,191 +1,169 @@
-mod editor;
-mod state;
+pub mod editor;
 
-use crate::app::{ClientState, HostParam};
-use crate::ui::editor::Editor;
-use crate::ui::state::{CommandState, EditMode, ViewState};
-use anyhow::Result;
-use std::io;
-use std::sync::mpsc;
-use std::thread;
-use std::time::Duration;
-use termion::{
-    event::Key, input::MouseTerminal, input::TermRead, raw::IntoRawMode, screen::AlternateScreen,
-};
+pub use crate::input::{CommandState, EditMode, Input, InputQueue};
+pub use crate::ui::editor::{Editor, EditorState};
+use crate::{app::App, host::HostParam};
 use tui::{
-    backend::{Backend, TermionBackend},
+    backend::Backend,
     buffer::Buffer,
     layout::Rect,
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     text::{Span, Spans},
-    widgets::{Block, Borders, List, ListItem, ListState, StatefulWidget, Widget},
-    Frame, Terminal,
+    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, StatefulWidget, Widget},
+    Frame,
 };
 
-pub struct Ui {
-    state: ViewState,
-    input_events: mpsc::Receiver<Input>,
+pub fn draw<B: Backend>(f: &mut Frame<B>, app: &mut App) {
+    let screen = f.size();
+    let sections = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(
+            [
+                Constraint::Length(screen.height - 2),
+                Constraint::Length(1),
+                Constraint::Length(1),
+            ]
+            .as_ref(),
+        )
+        .split(screen);
+
+    let main = sections[0];
+    let status = sections[1];
+    let command = sections[2];
+
+    let main_sections = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(80), Constraint::Percentage(20)].as_ref())
+        .split(main);
+
+    let editor_block = Block::default();
+    let editor_area = editor_block.inner(main_sections[0]);
+    f.render_widget(editor_block, main_sections[0]);
+
+    let editor = Editor::new(&app);
+    let mut edit_state = app.editor.clone();
+    f.render_stateful_widget(&editor, editor_area, &mut edit_state);
+
+    let command_line = CommandLine {
+        edit_mode: app.mode,
+    };
+    f.render_stateful_widget(command_line, command, &mut app.command);
+
+    let status_line = StatusLine::new(app);
+    f.render_widget(&status_line, status);
+
+    let sidebar_block = Block::default().borders(Borders::LEFT);
+    let sidebar_area = sidebar_block.inner(main_sections[1]);
+    f.render_widget(sidebar_block, main_sections[1]);
+    render_sidebar(f, app, sidebar_area);
 }
 
-enum Input {
-    Key(Key),
-    Tick,
-}
+fn render_sidebar<B: Backend>(f: &mut Frame<B>, app: &mut App, area: Rect) {
+    let sections = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(
+            [
+                Constraint::Ratio(1, 3),
+                Constraint::Ratio(1, 3),
+                Constraint::Ratio(1, 3),
+            ]
+            .as_ref(),
+        )
+        .split(area);
 
-impl Ui {
-    pub fn new(state: ClientState) -> Result<Self> {
-        let (sender, receiver) = mpsc::channel();
-        {
-            let sender = sender.clone();
-            thread::spawn(move || {
-                let stdin = io::stdin();
-                for evt in stdin.keys() {
-                    if let Ok(key) = evt {
-                        sender.send(Input::Key(key)).expect("send keyboard input");
-                    }
-                }
-            })
-        };
-        thread::spawn(move || loop {
-            if sender.send(Input::Tick).is_err() {
-                return;
-            }
-            thread::sleep(Duration::from_millis(33));
-        });
-
-        Ok(Self {
-            input_events: receiver,
-            state: ViewState::new(state),
+    // Instruments
+    let instruments: Vec<ListItem> = app
+        .instruments
+        .iter()
+        .enumerate()
+        .map(|(i, instr)| {
+            ListItem::new(Span::raw(format!(
+                " {:0width$} {}",
+                i,
+                instr.name,
+                width = 2
+            )))
         })
-    }
+        .collect();
 
-    pub fn run(mut self) -> Result<()> {
-        let stdout = io::stdout().into_raw_mode()?;
-        let stdout = MouseTerminal::from(stdout);
-        let stdout = AlternateScreen::from(stdout);
-        let backend = TermionBackend::new(stdout);
-        let mut terminal = Terminal::new(backend)?;
+    let instruments = List::new(instruments)
+        .block(Block::default())
+        .highlight_style(Style::default().fg(Color::White).bg(Color::Green));
 
-        loop {
-            self.state.app.apply_updates();
-            if self.state.app.should_stop {
-                return Ok(());
-            }
-            terminal.draw(|f| {
-                let screen = f.size();
-                let sections = Layout::default()
-                    .direction(Direction::Vertical)
-                    .constraints(
-                        [
-                            Constraint::Length(screen.height - 2),
-                            Constraint::Length(1),
-                            Constraint::Length(1),
-                        ]
-                        .as_ref(),
-                    )
-                    .split(screen);
+    f.render_stateful_widget(instruments, sections[0], &mut app.instrument_list);
 
-                let main = sections[0];
-                let status = sections[1];
-                let command = sections[2];
+    // File Browser
+    let file_sections = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(
+            [
+                Constraint::Length(1),
+                Constraint::Length(sections[1].height - 1),
+            ]
+            .as_ref(),
+        )
+        .split(sections[1]);
+    let current_dir = format!(" {}", app.file_browser.current_dir());
+    let header = Paragraph::new(current_dir).style(
+        Style::default()
+            .add_modifier(Modifier::REVERSED)
+            .add_modifier(Modifier::BOLD),
+    );
+    f.render_widget(header, file_sections[0]);
+    let files: Vec<ListItem> = app
+        .file_browser
+        .iter()
+        .map(|entry| {
+            let file_name = entry
+                .path()
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned();
+            let file_name = format!(" {}", file_name);
+            ListItem::new(Span::raw(file_name))
+        })
+        .collect();
+    let files = List::new(files)
+        .block(Block::default())
+        .highlight_style(Style::default().fg(Color::White).bg(Color::Green));
+    f.render_stateful_widget(files, file_sections[1], &mut app.files);
 
-                let main_sections = Layout::default()
-                    .direction(Direction::Horizontal)
-                    .constraints([Constraint::Percentage(80), Constraint::Percentage(20)].as_ref())
-                    .split(main);
+    // Parameters
+    let column_width = sections[2].width as usize / 2;
+    let track = app.editor.cursor.track;
+    let params: Vec<ListItem> = app.instruments[track]
+        .params
+        .iter()
+        .map(|(label, param)| {
+            let label = format!("{}", label); // required to make padding work below
+            ListItem::new(vec![Spans::from(vec![
+                Span::raw(format!(" {:<width$}", label, width = column_width)),
+                Span::raw(format!("{}", param)),
+            ])])
+        })
+        .collect();
 
-                let editor_block = Block::default();
-                let editor_area = editor_block.inner(main_sections[0]);
-                f.render_widget(editor_block, main_sections[0]);
+    let params = List::new(params)
+        .block(Block::default().borders(Borders::TOP))
+        .highlight_style(Style::default().fg(Color::White).bg(Color::Green));
 
-                let editor = Editor::new(&self.state.app);
-                f.render_stateful_widget(&editor, editor_area, &mut self.state.editor);
-
-                let command_line = CommandLine {
-                    edit_mode: self.state.mode,
-                };
-                f.render_stateful_widget(command_line, command, &mut self.state.command);
-
-                let status_line = StatusLine::new(&self.state.app);
-                f.render_widget(&status_line, status);
-
-                let sidebar_block = Block::default().borders(Borders::LEFT);
-                let sidebar_area = sidebar_block.inner(main_sections[1]);
-                f.render_widget(sidebar_block, main_sections[1]);
-                self.render_sidebar(f, sidebar_area);
-            })?;
-
-            match self.input_events.recv()? {
-                Input::Key(key) => self.state.handle_input(key)?,
-                Input::Tick => {}
-            }
-        }
-    }
-
-    fn render_sidebar<B: Backend>(&mut self, f: &mut Frame<B>, area: Rect) {
-        let sections = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
-            .split(area);
-
-        let instruments: Vec<ListItem> = self
-            .state
-            .app
-            .instruments
-            .iter()
-            .enumerate()
-            .map(|(i, instr)| {
-                ListItem::new(Span::raw(format!(
-                    " {:0width$} {}",
-                    i,
-                    instr.name,
-                    width = 2
-                )))
-            })
-            .collect();
-
-        let instruments = List::new(instruments)
-            .block(Block::default())
-            .highlight_style(Style::default().fg(Color::White).bg(Color::Green));
-
-        f.render_stateful_widget(instruments, sections[0], &mut self.state.instruments);
-
-        let column_width = 3 * (sections[1].width as usize / 4);
-
-        let track = self.state.editor.cursor.track;
-        let params: Vec<ListItem> = self.state.app.instruments[track]
-            .params
-            .iter()
-            .map(|(label, param)| {
-                let label = format!("{}", label); // required to make padding work below
-                ListItem::new(vec![Spans::from(vec![
-                    Span::raw(format!(" {:<width$}", label, width = column_width)),
-                    Span::raw(format!("{}", param)),
-                ])])
-            })
-            .collect();
-
-        let params = List::new(params)
-            .block(Block::default().borders(Borders::TOP))
-            .highlight_style(Style::default().fg(Color::White).bg(Color::Green));
-
-        f.render_stateful_widget(params, sections[1], &mut self.state.params);
-    }
+    f.render_stateful_widget(params, sections[2], &mut app.params);
 }
 
 struct StatusLine {
     bpm: u16,
-    lines_per_beat: usize,
-    octave: u8,
+    lines_per_beat: u16,
+    octave: u16,
 }
 
 impl StatusLine {
-    fn new(state: &ClientState) -> Self {
+    fn new(app: &App) -> Self {
         Self {
-            bpm: state.host_param(HostParam::Bpm) as u16,
-            lines_per_beat: state.host_param(HostParam::LinesPerBeat) as usize,
-            octave: state.host_param(HostParam::Octave) as u8,
+            bpm: app.host_params.get(HostParam::Bpm),
+            lines_per_beat: app.host_params.get(HostParam::LinesPerBeat),
+            octave: app.host_params.get(HostParam::Octave),
         }
     }
 }
@@ -241,7 +219,7 @@ impl ListCursorExt for ListState {
     }
 }
 
-trait ListCursorExt {
+pub trait ListCursorExt {
     fn selected(&self) -> Option<usize>;
     fn select(&mut self, index: Option<usize>);
 

@@ -1,21 +1,7 @@
-use crate::app::HostParam;
-use crate::sampler::SamplerParam;
+use std::sync::{atomic::Ordering, Arc};
+
 use anyhow::{anyhow, Result};
-
-#[derive(Copy, Clone, PartialEq)]
-pub enum ParamKey {
-    Host(HostParam),
-    Sampler(SamplerParam),
-}
-
-impl std::fmt::Display for ParamKey {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        match self {
-            Self::Sampler(param) => param.fmt(f),
-            _ => Ok(()),
-        }
-    }
-}
+use atomic_float::AtomicF32;
 
 #[derive(Copy, Clone)]
 pub enum Unit {
@@ -24,17 +10,16 @@ pub enum Unit {
     Samples,
 }
 
-#[derive(Copy, Clone)]
 pub struct Param {
     min: f32,
     max: f32,
-    pub val: f32,
+    pub val: Arc<AtomicF32>,
     step: f32,
     unit: Option<Unit>,
 }
 
 impl Param {
-    pub fn new(min: f32, val: f32, max: f32, step: f32) -> Self {
+    pub fn new(min: f32, val: Arc<AtomicF32>, max: f32, step: f32) -> Self {
         Self {
             min,
             val,
@@ -44,17 +29,21 @@ impl Param {
         }
     }
 
-    pub fn with_unit(&mut self, unit: Unit) -> Self {
+    pub fn with_unit(mut self, unit: Unit) -> Self {
         self.unit = Some(unit);
-        *self
+        self
     }
 
-    pub fn inc(&mut self) {
-        self.val = f32::min(self.val + self.step, self.max);
+    pub fn incr(&mut self) {
+        let mut val = self.val.load(Ordering::Relaxed);
+        val = f32::min(val + self.step, self.max);
+        self.val.store(val, Ordering::Relaxed);
     }
 
-    pub fn dec(&mut self) {
-        self.val = f32::max(self.val - self.step, self.min);
+    pub fn decr(&mut self) {
+        let mut val = self.val.load(Ordering::Relaxed);
+        val = f32::max(val - self.step, self.min);
+        self.val.store(val, Ordering::Relaxed);
     }
 
     pub fn set(&mut self, value: f32) -> Result<()> {
@@ -65,27 +54,28 @@ impl Param {
                 self.max
             ));
         }
-        self.val = value;
+        self.val.store(value, Ordering::Relaxed);
         Ok(())
     }
 }
 
 impl std::fmt::Display for Param {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        let val = self.val.load(Ordering::Relaxed);
         if let Some(unit) = self.unit {
             match unit {
-                Unit::Decibel => write!(f, "{:.2} dB", self.val),
+                Unit::Decibel => write!(f, "{:.2} dB", val),
                 Unit::Seconds => {
-                    if self.val < 1.0 {
-                        write!(f, "{:.0} ms", self.val * 1000.0)
+                    if val < 1.0 {
+                        write!(f, "{:.0} ms", val * 1000.0)
                     } else {
-                        write!(f, "{:.2} s", self.val)
+                        write!(f, "{:.2} s", val)
                     }
                 }
-                Unit::Samples => write!(f, "{:.0}", self.val),
+                Unit::Samples => write!(f, "{:.0}", val),
             }
         } else {
-            write!(f, "{:.2}", self.val)
+            write!(f, "{:.2}", val)
         }
     }
 }

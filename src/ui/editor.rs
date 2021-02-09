@@ -1,5 +1,5 @@
-use crate::app::{ClientState, HostParam};
 use crate::seq::{Event, Pattern, Slot};
+use crate::{app::App, host::HostParam};
 use termion::event::Key;
 
 use tui::{
@@ -9,6 +9,7 @@ use tui::{
     widgets::StatefulWidget,
 };
 
+#[derive(Clone)]
 pub struct EditorState {
     pub cursor: Slot,
     pub pending_key: Option<Key>,
@@ -38,13 +39,13 @@ pub struct Editor<'a> {
 }
 
 impl<'a> Editor<'a> {
-    pub fn new(state: &'a ClientState) -> Self {
+    pub fn new(app: &'a App) -> Self {
         Self {
-            pattern: &state.current_pattern,
+            pattern: &app.current_pattern,
             note_names: note_names(),
-            num_tracks: state.instruments.len(),
-            lines_per_beat: state.host_param(HostParam::LinesPerBeat) as usize,
-            current_line: state.current_line,
+            num_tracks: app.instruments.len(),
+            lines_per_beat: app.host_params.get(HostParam::LinesPerBeat) as usize,
+            current_line: app.current_line,
         }
     }
 }
