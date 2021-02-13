@@ -1,15 +1,15 @@
 pub mod editor;
 
-pub use crate::input::{CommandState, EditMode, Input, InputQueue};
+pub use crate::input::{CommandState, Input, InputQueue};
 pub use crate::ui::editor::{Editor, EditorState};
-use crate::{app::App, host::HostParam};
+use crate::{app::App, engine::EngineParam};
 use tui::{
     backend::Backend,
     buffer::Buffer,
     layout::Rect,
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
-    text::{Span, Spans},
+    text::Span,
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph, StatefulWidget, Widget},
     Frame,
 };
@@ -42,12 +42,10 @@ pub fn draw<B: Backend>(f: &mut Frame<B>, app: &mut App) {
     f.render_widget(editor_block, main_sections[0]);
 
     let editor = Editor::new(&app);
-    let mut edit_state = app.editor.clone();
+    let mut edit_state = app.edit_state.clone();
     f.render_stateful_widget(&editor, editor_area, &mut edit_state);
 
-    let command_line = CommandLine {
-        edit_mode: app.mode,
-    };
+    let command_line = CommandLine {};
     f.render_stateful_widget(command_line, command, &mut app.command);
 
     let status_line = StatusLine::new(app);
@@ -62,14 +60,7 @@ pub fn draw<B: Backend>(f: &mut Frame<B>, app: &mut App) {
 fn render_sidebar<B: Backend>(f: &mut Frame<B>, app: &mut App, area: Rect) {
     let sections = Layout::default()
         .direction(Direction::Vertical)
-        .constraints(
-            [
-                Constraint::Ratio(1, 3),
-                Constraint::Ratio(1, 3),
-                Constraint::Ratio(1, 3),
-            ]
-            .as_ref(),
-        )
+        .constraints([Constraint::Ratio(1, 3), Constraint::Ratio(2, 3)].as_ref())
         .split(area);
 
     // Instruments
@@ -77,11 +68,11 @@ fn render_sidebar<B: Backend>(f: &mut Frame<B>, app: &mut App, area: Rect) {
         .instruments
         .iter()
         .enumerate()
-        .map(|(i, instr)| {
+        .map(|(i, track)| {
             ListItem::new(Span::raw(format!(
                 " {:0width$} {}",
                 i,
-                instr.name,
+                track.as_ref().map_or("", |v| v.sample_path.as_ref()),
                 width = 2
             )))
         })
@@ -114,42 +105,12 @@ fn render_sidebar<B: Backend>(f: &mut Frame<B>, app: &mut App, area: Rect) {
     let files: Vec<ListItem> = app
         .file_browser
         .iter()
-        .map(|entry| {
-            let file_name = entry
-                .path()
-                .file_name()
-                .unwrap()
-                .to_string_lossy()
-                .into_owned();
-            let file_name = format!(" {}", file_name);
-            ListItem::new(Span::raw(file_name))
-        })
+        .map(|name| ListItem::new(Span::raw(format!(" {}", name))))
         .collect();
     let files = List::new(files)
         .block(Block::default())
         .highlight_style(Style::default().fg(Color::White).bg(Color::Green));
     f.render_stateful_widget(files, file_sections[1], &mut app.files);
-
-    // Parameters
-    let column_width = sections[2].width as usize / 2;
-    let track = app.editor.cursor.track;
-    let params: Vec<ListItem> = app.instruments[track]
-        .params
-        .iter()
-        .map(|(label, param)| {
-            let label = format!("{}", label); // required to make padding work below
-            ListItem::new(vec![Spans::from(vec![
-                Span::raw(format!(" {:<width$}", label, width = column_width)),
-                Span::raw(format!("{}", param)),
-            ])])
-        })
-        .collect();
-
-    let params = List::new(params)
-        .block(Block::default().borders(Borders::TOP))
-        .highlight_style(Style::default().fg(Color::White).bg(Color::Green));
-
-    f.render_stateful_widget(params, sections[2], &mut app.params);
 }
 
 struct StatusLine {
@@ -161,9 +122,9 @@ struct StatusLine {
 impl StatusLine {
     fn new(app: &App) -> Self {
         Self {
-            bpm: app.host_params.get(HostParam::Bpm),
-            lines_per_beat: app.host_params.get(HostParam::LinesPerBeat),
-            octave: app.host_params.get(HostParam::Octave),
+            bpm: app.engine_params.get(EngineParam::Bpm),
+            lines_per_beat: app.engine_params.get(EngineParam::LinesPerBeat),
+            octave: app.engine_params.get(EngineParam::Octave),
         }
     }
 }
@@ -192,17 +153,13 @@ impl Widget for &StatusLine {
     }
 }
 
-pub struct CommandLine {
-    edit_mode: EditMode,
-}
+pub struct CommandLine {}
 
 impl StatefulWidget for CommandLine {
     type State = CommandState;
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
-        if self.edit_mode == EditMode::Insert {
-            buf.set_string(area.left(), area.top(), "-- INSERT --", Style::default());
-        } else if state.buffer.len() > 0 {
+        if state.buffer.len() > 0 {
             buf.set_string(area.left(), area.top(), ":", Style::default());
             buf.set_string(area.left() + 1, area.top(), &state.buffer, Style::default());
         }

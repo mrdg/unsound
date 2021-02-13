@@ -1,6 +1,5 @@
-use crate::host::{DeviceCommand, Instrument};
+use crate::engine::Device;
 use crate::param::Param;
-use crate::seq::Event;
 use crate::SAMPLE_RATE;
 use crate::{
     env::{Envelope, State as EnvelopeState},
@@ -8,30 +7,22 @@ use crate::{
 };
 use anyhow::Result;
 use atomic_float::AtomicF32;
+use camino::Utf8PathBuf;
 use hound::WavReader;
-use std::{
-    ops::{Add, Mul},
-    path::PathBuf,
-};
-use std::{
-    rc::Rc,
-    sync::{atomic::Ordering, Arc},
-};
+use std::ops::{Add, Mul};
+use std::sync::{atomic::Ordering, Arc};
 
-const ROOT_PITCH: i32 = 48;
-
-pub enum SamplerCommand {
-    LoadSound(Sound),
-}
+pub const ROOT_PITCH: u8 = 48;
 
 struct Voice {
     position: f32,
     state: VoiceState,
     pitch_ratio: f32,
-    pitch: i32,
+    pitch: u8,
+    volume: f32,
     env: Envelope,
     column: usize,
-    sound: Rc<Sound>,
+    sound: Option<Arc<Sound>>,
 }
 
 #[derive(PartialEq, Debug)]
@@ -41,15 +32,16 @@ enum VoiceState {
 }
 
 impl<'a> Voice {
-    fn new(sound: Rc<Sound>) -> Self {
+    fn new() -> Self {
         Self {
             position: 0.0,
             column: 0,
             pitch: 0,
+            volume: 0.0,
             pitch_ratio: 0.,
             state: VoiceState::Free,
             env: Envelope::new(),
-            sound,
+            sound: None,
         }
     }
 }
@@ -62,9 +54,7 @@ pub struct Sound {
 
 pub struct Sampler {
     voices: Vec<Voice>,
-    cued_sound: Option<Rc<Sound>>,
     amp: Arc<AtomicF32>,
-    offset: Arc<AtomicF32>,
     attack: Arc<AtomicF32>,
     decay: Arc<AtomicF32>,
     sustain: Arc<AtomicF32>,
@@ -72,26 +62,23 @@ pub struct Sampler {
 }
 
 impl Sampler {
-    pub fn with_sample(sound: Sound) -> Result<Sampler> {
+    pub fn new() -> Self {
         let num_voices = 8;
-        let sound = Rc::new(sound);
         let mut voices = Vec::with_capacity(num_voices);
         for _ in 0..num_voices {
-            voices.push(Voice::new(sound.clone()));
+            voices.push(Voice::new());
         }
-        Ok(Sampler {
+        Self {
             amp: Arc::new(AtomicF32::new(-6.0)),
-            offset: Arc::new(AtomicF32::new(sound.offset as f32)),
             attack: Arc::new(AtomicF32::new(0.005)),
             decay: Arc::new(AtomicF32::new(0.25)),
-            sustain: Arc::new(AtomicF32::new(0.0)),
-            release: Arc::new(AtomicF32::new(0.0)),
-            cued_sound: None,
+            sustain: Arc::new(AtomicF32::new(1.0)),
+            release: Arc::new(AtomicF32::new(0.3)),
             voices,
-        })
+        }
     }
 
-    pub fn load_sound(path: &PathBuf) -> Result<Sound> {
+    pub fn load_sound(path: &Utf8PathBuf) -> Result<Sound> {
         let mut wav = WavReader::open(path.clone())?;
         let wav_spec = wav.spec();
         let bit_depth = wav_spec.bits_per_sample as f32;
@@ -131,10 +118,6 @@ impl Sampler {
                 Param::new(-60.0, Arc::clone(&self.amp), 6.0, 1.0).with_unit(Unit::Decibel),
             ),
             (
-                "Offset",
-                Param::new(0.0, Arc::clone(&self.offset), f32::MAX, 1.0),
-            ),
-            (
                 "Attack",
                 Param::new(0.0, Arc::clone(&self.attack), 15.0, 0.01).with_unit(Unit::Seconds),
             ),
@@ -144,7 +127,7 @@ impl Sampler {
             ),
             (
                 "Sustain",
-                Param::new(0.0, Arc::clone(&self.sustain), 15.0, 0.01).with_unit(Unit::Seconds),
+                Param::new(0.0, Arc::clone(&self.sustain), 15.0, 0.01),
             ),
             (
                 "Release",
@@ -156,7 +139,9 @@ impl Sampler {
         .collect()
     }
 
-    fn note_on(&mut self, column: usize, pitch: i32) {
+    pub fn note_on(&mut self, sound: Arc<Sound>, column: usize, pitch: u8, velocity: u8) {
+        self.stop_note(column);
+
         let attack = self.attack.load(Ordering::Relaxed);
         let decay = self.decay.load(Ordering::Relaxed);
         let sustain = self.sustain.load(Ordering::Relaxed);
@@ -169,15 +154,19 @@ impl Sampler {
             voice.env.start_attack();
             voice.state = VoiceState::Busy;
             voice.pitch = pitch;
+            voice.volume = gain_factor(map(velocity as f32, (0.0, 127.0), (-60.0, 0.0)));
             voice.column = column;
-            voice.pitch_ratio = f32::powf(2., (pitch - ROOT_PITCH) as f32 / 12.0)
-                * (voice.sound.sample_rate as f32 / SAMPLE_RATE as f32);
+            let pitch = pitch as i8 - ROOT_PITCH as i8;
+            voice.pitch_ratio = f32::powf(2., pitch as f32 / 12.0)
+                * (sound.sample_rate as f32 / SAMPLE_RATE as f32);
+            voice.position = sound.offset as f32;
+            voice.sound = Some(sound);
         } else {
             eprintln!("dropped event");
         }
     }
 
-    fn note_off(&mut self, column: usize, pitch: i32) {
+    fn note_off(&mut self, column: usize, pitch: u8) {
         if let Some(voice) = self
             .voices
             .iter_mut()
@@ -203,66 +192,35 @@ fn gain_factor(db: f32) -> f32 {
     f32::powf(10.0, db / 20.0)
 }
 
-impl Instrument for Sampler {
-    fn exec_command(&mut self, cmd: DeviceCommand) -> Result<()> {
-        match cmd {
-            DeviceCommand::Sampler(cmd) => match cmd {
-                SamplerCommand::LoadSound(snd) => {
-                    self.offset.store(snd.offset as f32, Ordering::Relaxed);
-                    self.cued_sound = Some(Rc::new(snd));
-                }
-            },
-        }
-        Ok(())
-    }
-
-    fn send_event(&mut self, column: usize, event: &Event) {
-        match event {
-            Event::NoteOn { pitch } => {
-                self.stop_note(column);
-                self.note_on(column, *pitch);
-            }
-            Event::NoteOff { pitch } => {
-                self.note_off(column, *pitch);
-            }
-            Event::Empty => {}
-        }
-    }
-
+impl Device for Sampler {
     fn render(&mut self, buffer: &mut [(f32, f32)]) {
         let amp = gain_factor(self.amp.load(Ordering::Relaxed));
 
-        let offset = self.offset.load(Ordering::Relaxed);
         for voice in &mut self.voices {
             if voice.env.state == EnvelopeState::Init {
                 voice.state = VoiceState::Free;
-                voice.position = offset;
-                if let Some(snd) = &self.cued_sound {
-                    voice.sound = snd.clone();
-                }
+                voice.sound = None;
             }
             if voice.state != VoiceState::Busy {
                 continue;
             }
+            let sound = &voice.sound.as_ref().unwrap();
             for i in 0..buffer.len() {
                 let pos = voice.position as usize;
                 let weight = voice.position - pos as f32;
                 let inverse_weight = 1.0 - weight;
 
-                let frame = &voice.sound.buf[pos];
-                let next_frame = &voice.sound.buf[pos + 1];
+                let frame = &sound.buf[pos];
+                let next_frame = &sound.buf[pos + 1];
                 let new_frame = frame * inverse_weight + next_frame * weight;
 
                 let env = voice.env.value() as f32;
-                buffer[i].0 += amp * env * new_frame.left;
-                buffer[i].1 += amp * env * new_frame.right;
+                buffer[i].0 += voice.volume * amp * env * new_frame.left;
+                buffer[i].1 += voice.volume * amp * env * new_frame.right;
                 voice.position += voice.pitch_ratio;
-                if voice.position >= (voice.sound.buf.len() - 1) as f32 {
+                if voice.position >= (sound.buf.len() - 1) as f32 {
                     voice.state = VoiceState::Free;
-                    voice.position = offset;
-                    if let Some(snd) = &self.cued_sound {
-                        voice.sound = snd.clone();
-                    }
+                    voice.sound = None;
                     break;
                 }
             }
@@ -295,4 +253,8 @@ impl Add for Frame {
             right: self.right + other.right,
         }
     }
+}
+
+fn map(v: f32, from: (f32, f32), to: (f32, f32)) -> f32 {
+    (v - from.0) * (to.1 - to.0) / (from.1 - from.0) + to.0
 }

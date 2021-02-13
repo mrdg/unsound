@@ -31,6 +31,7 @@ impl Envelope {
             decay: 0.1,
             sustain: 0.8,
             release: 0.01,
+
             attack_rate: 0.,
             decay_rate: 0.,
             release_rate: 0.,

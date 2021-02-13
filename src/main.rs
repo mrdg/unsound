@@ -6,24 +6,25 @@ extern crate portaudio;
 extern crate lazy_static;
 
 mod app;
+mod engine;
 mod env;
-mod host;
 mod input;
 mod param;
+mod pattern;
 mod sampler;
-mod seq;
 mod ui;
 
 use anyhow::Result;
 use app::{Action, App, AppCommand};
-use host::{Host, HostCommand, HostParams};
+use camino::Utf8PathBuf;
+use engine::{Engine, EngineCommand, EngineParams};
 use portaudio::stream_flags as paflags;
 use portaudio::OutputStreamCallbackArgs;
 use portaudio::PortAudio;
 use ringbuf::RingBuffer;
 
 const SAMPLE_RATE: f64 = 44_100.0;
-const FRAMES_PER_BUFFER: u32 = 64;
+const FRAMES_PER_BUFFER: u32 = 256;
 
 fn main() {
     match run() {
@@ -35,20 +36,28 @@ fn main() {
 }
 
 fn run() -> Result<()> {
-    let (host_send, host_recv) = RingBuffer::<HostCommand>::new(16).split();
+    let (engine_send, engine_rcv) = RingBuffer::<EngineCommand>::new(16).split();
     let (app_send, app_recv) = RingBuffer::<AppCommand>::new(16).split();
 
-    let params = HostParams::default();
-    let host = Host::new(params.clone(), host_recv, app_send);
-    let mut app = App::new(params, app_recv, host_send)?;
-    let mut stream = run_audio(host)?;
+    let params = EngineParams::default();
+    let engine = Engine::new(params.clone(), engine_rcv, app_send);
+    let mut app = App::new(params, app_recv, engine_send)?;
+    let mut stream = run_audio(engine)?;
 
     // Load some default sounds for easier testing
-    app.take(Action::AddTrack(String::from("sounds/kick.wav")))?;
-    app.take(Action::AddTrack(String::from("sounds/snare.wav")))?;
-    app.take(Action::AddTrack(String::from("sounds/hihat.wav")))?;
-    app.take(Action::AddTrack(String::from("sounds/chord.wav")))?;
-    app.take(Action::AddTrack(String::from("sounds/bass.wav")))?;
+    for (i, path) in vec![
+        "sounds/kick.wav",
+        "sounds/snare.wav",
+        "sounds/hihat-open.wav",
+        "sounds/hihat-closed.wav",
+        "sounds/chord.wav",
+        "sounds/bass.wav",
+    ]
+    .iter()
+    .enumerate()
+    {
+        app.take(Action::LoadSound(i, Utf8PathBuf::from(path)))?;
+    }
 
     let result = app.run();
 
@@ -60,7 +69,7 @@ fn run() -> Result<()> {
 
 type AudioStream = portaudio::Stream<portaudio::NonBlocking, portaudio::Output<f32>>;
 
-fn run_audio(mut host: Host) -> Result<AudioStream> {
+fn run_audio(mut engine: Engine) -> Result<AudioStream> {
     let pa = PortAudio::new()?;
     let mut settings =
         pa.default_output_stream_settings::<f32>(2, SAMPLE_RATE, FRAMES_PER_BUFFER)?;
@@ -68,7 +77,7 @@ fn run_audio(mut host: Host) -> Result<AudioStream> {
 
     let mut buf = [(0., 0.); FRAMES_PER_BUFFER as usize];
     let callback = move |OutputStreamCallbackArgs { buffer, .. }| {
-        host.render(&mut buf);
+        engine.render(&mut buf);
 
         let mut i = 0;
         for j in 0..buf.len() {

@@ -1,68 +1,78 @@
-use crate::host::{DeviceCommand, HostCommand, HostParam, HostParams};
+use crate::engine::{EngineCommand, EngineParam, EngineParams};
 use crate::input;
-use crate::input::{CommandState, EditMode, Focus, Input, InputQueue};
+use crate::input::{CommandState, Focus, Input, InputQueue};
 use crate::param::Param;
-use crate::sampler::{Sampler, SamplerCommand};
-use crate::seq::{Event, Pattern, Slot};
+use crate::pattern::{Editor, Move, MAX_TRACKS};
+use crate::sampler::Sampler;
 use crate::ui;
 use crate::ui::editor::EditorState;
 use anyhow::{anyhow, Result};
+use camino::{Utf8Path, Utf8PathBuf};
 use ringbuf::{Consumer, Producer};
+use std::fs;
 use std::fs::DirEntry;
-use std::path::PathBuf;
-use std::{cmp, sync::atomic::Ordering};
-use std::{fs, path::Path};
-use std::{io, slice};
+use std::io;
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
 use termion::{input::MouseTerminal, raw::IntoRawMode, screen::AlternateScreen};
 use tui::{backend::TermionBackend, widgets::ListState, Terminal};
 
-pub struct InstrumentState {
-    pub name: String,
+pub struct TrackSettings {
+    pub sample_path: Utf8PathBuf,
     pub params: Vec<(String, Param)>,
 }
 
 pub struct App {
     cons: Consumer<AppCommand>,
-    prod: Producer<HostCommand>,
+    prod: Producer<EngineCommand>,
+
+    pub editor: Editor,
+
+    pub selected_track: usize,
+    pub instruments: Vec<Option<TrackSettings>>,
 
     pub file_browser: FileBrowser,
     pub current_line: usize,
-    pub current_pattern: Pattern,
-    pub instruments: Vec<InstrumentState>,
     pub should_stop: bool,
-    pub host_params: HostParams,
+    pub engine_params: EngineParams,
 
-    pub mode: EditMode,
     pub focus: Focus,
     pub files: ListState,
     pub instrument_list: ListState,
     pub params: ListState,
-    pub editor: EditorState,
+    pub edit_state: EditorState,
     pub command: CommandState,
 }
 
 impl App {
     pub fn new(
-        params: HostParams,
+        params: EngineParams,
         cons: Consumer<AppCommand>,
-        prod: Producer<HostCommand>,
+        prod: Producer<EngineCommand>,
     ) -> Result<Self> {
         let file_browser = FileBrowser::with_path("./sounds")?;
+        let mut instruments = Vec::with_capacity(MAX_TRACKS);
+        for _ in 0..MAX_TRACKS {
+            instruments.push(None);
+        }
+
+        let mut file_state = ListState::default();
+        file_state.select(Some(0));
 
         Ok(App {
             cons,
             prod,
+            editor: Editor::new(),
+            selected_track: 0,
             current_line: 0,
-            instruments: Vec::new(),
-            current_pattern: Pattern::new(),
+            instruments,
             should_stop: false,
-            host_params: params,
+            engine_params: params,
             file_browser,
             params: ListState::default(),
             instrument_list: ListState::default(),
-            files: ListState::default(),
-            mode: EditMode::Normal,
-            editor: EditorState::new(),
+            files: file_state,
+            edit_state: EditorState::new(),
             focus: Focus::Editor,
             command: CommandState {
                 buffer: String::with_capacity(1024),
@@ -73,7 +83,10 @@ impl App {
     pub fn run_commands(&mut self) {
         while let Some(update) = self.cons.pop() {
             match update {
-                AppCommand::SetCurrentLine(line) => self.current_line = line,
+                AppCommand::SetCurrentTick(tick) => {
+                    let pattern = self.editor.current_pattern();
+                    self.current_line = tick % pattern.num_lines;
+                }
             }
         }
     }
@@ -105,74 +118,76 @@ impl App {
             Action::Exit => {
                 self.should_stop = true;
             }
-            Action::AddTrack(path) => {
-                let sound = Sampler::load_sound(&PathBuf::from(&path))?;
-                let sampler = Sampler::with_sample(sound)?;
-                let params = sampler.params();
-                self.instruments.push(InstrumentState {
-                    name: String::from(path),
-                    params,
-                });
-                self.host_send(HostCommand::PutInstrument(0, Box::new(sampler)))?
-            }
-            Action::LoadSound(index, path) => {
+            Action::LoadSound(i, path) => {
                 let sound = Sampler::load_sound(&path)?;
-                if let Some(instr) = self.instruments.get_mut(index) {
-                    instr.name = path.to_string_lossy().into_owned();
-                }
-                let cmd = DeviceCommand::Sampler(SamplerCommand::LoadSound(sound));
-                self.host_send(HostCommand::Device(index, cmd))?;
+                self.instruments[i] = Some(TrackSettings {
+                    sample_path: path,
+                    params: Vec::new(),
+                });
+                self.engine_send(EngineCommand::LoadSound(i, Arc::new(sound)))?;
             }
-            Action::PutNote(slot, pitch) => {
-                let pitch = cmp::min(cmp::max(0, pitch), 126);
-                let event = Event::NoteOn { pitch };
-                self.current_pattern.add_event(event, slot);
-                self.host_send(HostCommand::PutPatternEvent { event, slot })?
+            Action::PreviewSound(path) => {
+                let sound = Sampler::load_sound(&path)?;
+                self.engine_send(EngineCommand::PreviewSound(Arc::new(sound)))?;
             }
-            Action::ChangePitch(slot, change) => {
-                match self.current_pattern.event_at(slot.line, slot.track) {
-                    Event::NoteOn { pitch } => self.take(Action::PutNote(slot, pitch + change))?,
-                    _ => {}
-                }
+            Action::InsertNote(pitch) => {
+                let oct = self.engine_params.get(EngineParam::Octave) as u8;
+                let pitch = oct * 12 + pitch;
+                self.editor.set_pitch(pitch);
+                self.engine_send(EngineCommand::InputNote(self.editor.cursor, pitch))?;
+                self.take(Action::MoveCursor(Move::Down))?;
             }
-            Action::DeleteNote(slot) => {
-                let event = Event::Empty;
-                self.current_pattern.add_event(event, slot);
-                self.host_send(HostCommand::PutPatternEvent { event, slot })?
+            Action::InsertNumber(num) => {
+                self.editor.set_number(num);
+                self.engine_send(EngineCommand::InputNumber(self.editor.cursor, num))?;
+            }
+            Action::ChangeValue(delta) => {
+                self.editor.change_value(delta);
+                self.engine_send(EngineCommand::ChangeValue(self.editor.cursor, delta))?;
+            }
+            Action::DeleteNote => {
+                self.editor.delete_value();
+                self.engine_send(EngineCommand::DeleteValue(self.editor.cursor))?;
             }
             Action::TogglePlay => {
-                let val = self.host_params.is_playing.load(Ordering::Relaxed);
-                self.host_params.is_playing.store(!val, Ordering::Relaxed);
+                let val = self.engine_params.is_playing.load(Ordering::Relaxed);
+                self.engine_params.is_playing.store(!val, Ordering::Relaxed);
             }
-            Action::IncrParam(device_index, param_index) => {
-                if let Some(device) = self.instruments.get_mut(device_index) {
-                    if let Some((_, param)) = device.params.get_mut(param_index) {
+            Action::IncrParam(param_index) => {
+                let track = self.selected_track;
+                if let Some(track) = &mut self.instruments[track] {
+                    if let Some((_, param)) = track.params.get_mut(param_index) {
                         param.incr();
                     }
                 }
             }
-            Action::DecrParam(device_index, param_index) => {
-                if let Some(device) = self.instruments.get_mut(device_index) {
-                    if let Some((_, param)) = device.params.get_mut(param_index) {
+            Action::DecrParam(param_index) => {
+                let track = self.selected_track;
+                if let Some(track) = &mut self.instruments[track] {
+                    if let Some((_, param)) = track.params.get_mut(param_index) {
                         param.decr();
                     }
                 }
             }
-            Action::UpdateHostParam(param, value) => {
+            Action::UpdateEngineParam(param, value) => {
                 let param = match param {
-                    HostParam::Bpm => &self.host_params.bpm,
-                    HostParam::LinesPerBeat => &self.host_params.lines_per_beat,
-                    HostParam::Octave => &self.host_params.octave,
+                    EngineParam::Bpm => &self.engine_params.bpm,
+                    EngineParam::LinesPerBeat => &self.engine_params.lines_per_beat,
+                    EngineParam::Octave => &self.engine_params.octave,
                 };
                 param.store(value.parse()?, Ordering::Relaxed);
+            }
+            Action::MoveCursor(cursor_move) => {
+                self.editor.move_cursor(cursor_move);
+                self.selected_track = self.editor.selected_track();
             }
         }
         Ok(())
     }
 
-    fn host_send(&mut self, cmd: HostCommand) -> Result<()> {
+    fn engine_send(&mut self, cmd: EngineCommand) -> Result<()> {
         if self.prod.push(cmd).is_err() {
-            Err(anyhow!("unable to send message to host"))
+            Err(anyhow!("unable to send message to engine"))
         } else {
             Ok(())
         }
@@ -180,60 +195,91 @@ impl App {
 }
 
 pub enum AppCommand {
-    SetCurrentLine(usize),
+    SetCurrentTick(usize),
 }
 
 pub enum Action {
     Exit,
-    AddTrack(String),
-    LoadSound(usize, PathBuf),
-    PutNote(Slot, i32),
-    DeleteNote(Slot),
-    ChangePitch(Slot, i32),
+    LoadSound(usize, Utf8PathBuf),
+    PreviewSound(Utf8PathBuf),
+    InsertNote(u8),
+    InsertNumber(i32),
+    DeleteNote,
+    ChangeValue(i32),
     TogglePlay,
-    IncrParam(usize, usize),
-    DecrParam(usize, usize),
-    UpdateHostParam(HostParam, String),
+    IncrParam(usize),
+    DecrParam(usize),
+    UpdateEngineParam(EngineParam, String),
+    MoveCursor(Move),
 }
 
 pub struct FileBrowser {
     entries: Vec<DirEntry>,
-    current: PathBuf,
+    dir: Utf8PathBuf,
+    short_dir: Utf8PathBuf,
 }
 
 impl FileBrowser {
-    pub fn with_path<P: AsRef<Path>>(path: P) -> Result<FileBrowser> {
+    pub fn with_path<P: AsRef<Utf8Path>>(path: P) -> Result<FileBrowser> {
         let mut fb = FileBrowser {
             entries: Vec::new(),
-            current: PathBuf::new(),
+            dir: Utf8PathBuf::new(),
+            short_dir: Utf8PathBuf::new(),
         };
         fb.move_to(path)?;
         Ok(fb)
     }
 
-    pub fn move_to<P: AsRef<Path>>(&mut self, path: P) -> Result<()> {
-        self.entries.clear();
-        for entry in fs::read_dir(&path)? {
-            let entry = entry?;
-            self.entries.push(entry);
+    pub fn move_up(&mut self) -> Result<()> {
+        if let Some(parent) = self.dir.clone().parent() {
+            self.move_to(parent)?;
         }
-        self.current = path.as_ref().to_path_buf();
+        Ok(())
+    }
+
+    pub fn move_to<P: AsRef<Utf8Path>>(&mut self, path: P) -> Result<()> {
+        self.entries.clear();
+        for entry in fs::read_dir(path.as_ref())? {
+            let entry = entry?;
+            if entry.path().is_dir() || entry.path().extension().map_or(false, |ext| ext == "wav") {
+                self.entries.push(entry);
+            }
+        }
+        self.dir = Utf8PathBuf::from_path_buf(path.as_ref().canonicalize()?)
+            .map_err(|path| anyhow!("invalid path {}", path.display()))?;
+
+        self.short_dir.clear();
+        let parts: Vec<_> = self.dir.components().collect();
+        if parts.len() > 3 {
+            for part in &parts[..parts.len() - 1] {
+                self.short_dir
+                    .push(part.as_str().chars().nth(0).unwrap().to_string());
+            }
+            self.short_dir.push(parts.last().unwrap());
+        } else {
+            self.short_dir = self.dir.clone();
+        }
         self.entries.sort_by_key(|e| e.path());
         Ok(())
     }
 
-    pub fn iter(&self) -> slice::Iter<'_, DirEntry> {
-        self.entries.iter()
+    pub fn num_entries(&self) -> usize {
+        self.entries.len()
     }
 
-    pub fn get(&self, i: usize) -> Option<PathBuf> {
-        self.entries.get(i).map(|entry| entry.path())
+    pub fn iter(&self) -> impl Iterator<Item = String> + '_ {
+        self.entries
+            .iter()
+            .map(|entry| entry.file_name().to_string_lossy().to_string())
+    }
+
+    pub fn get(&self, i: usize) -> Option<Utf8PathBuf> {
+        self.entries
+            .get(i)
+            .and_then(|entry| Utf8PathBuf::from_path_buf(entry.path()).ok())
     }
 
     pub fn current_dir(&self) -> String {
-        match self.current.canonicalize() {
-            Ok(path) => path.to_string_lossy().into_owned(),
-            Err(_) => String::from(""),
-        }
+        self.short_dir.to_string()
     }
 }
