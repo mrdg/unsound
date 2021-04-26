@@ -87,7 +87,7 @@ impl Editor {
             1 => {
                 let step = self.get_step();
                 let s = step.sound.get_or_insert(0);
-                *s = (*s * 10 + num as u8) % 100;
+                *s = ((*s as i32 * 10 + num) % 100) as u8;
             }
             _ => {}
         }
