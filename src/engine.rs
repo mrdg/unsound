@@ -172,7 +172,7 @@ impl Engine {
 
         if self.samples_to_tick == 0 {
             for note in self.editor.iter_notes(self.current_tick) {
-                if let Some(snd) = &self.sounds[note.sound as usize] {
+                if let Some(Some(snd)) = &self.sounds.get(note.sound as usize) {
                     let sampler = &mut self.channels[note.track as usize];
                     sampler.note_on(snd.clone(), note.track as usize, note.pitch, 80);
                 }
