@@ -98,7 +98,7 @@ impl Editor {
         let step = self.get_step();
         match field {
             0 => step.pitch = None,
-            1..=2 => step.sound = None,
+            1 => step.sound = None,
             _ => {}
         }
     }
