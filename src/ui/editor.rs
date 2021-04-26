@@ -53,7 +53,7 @@ impl<'a> Editor<'a> {
 
         // Draw notes
         let mut y = area.top() + 1;
-        for (line, note) in track.notes.iter().enumerate() {
+        for (line, note) in track.steps.iter().enumerate() {
             let base_style = self.get_base_style(line);
             let column = index * 2;
 

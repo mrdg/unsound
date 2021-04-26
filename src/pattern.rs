@@ -78,15 +78,15 @@ impl Editor {
     }
 
     pub fn set_pitch(&mut self, pitch: u8) {
-        let note = self.get_note();
-        note.pitch = Some(pitch);
+        let step = self.get_step();
+        step.pitch = Some(pitch);
     }
 
     pub fn set_number(&mut self, num: i32) {
         match self.cursor.column % NUM_TRACK_LANES {
             1 => {
-                let note = self.get_note();
-                let s = note.sound.get_or_insert(0);
+                let step = self.get_step();
+                let s = step.sound.get_or_insert(0);
                 *s = (*s * 10 + num as u8) % 100;
             }
             _ => {}
@@ -95,37 +95,37 @@ impl Editor {
 
     pub fn delete_value(&mut self) {
         let field = self.cursor.column % NUM_TRACK_LANES;
-        let note = self.get_note();
+        let step = self.get_step();
         match field {
-            0 => note.pitch = None,
-            1..=2 => note.sound = None,
+            0 => step.pitch = None,
+            1..=2 => step.sound = None,
             _ => {}
         }
     }
 
     pub fn change_value(&mut self, delta: i32) {
         let field = self.cursor.column % NUM_TRACK_LANES;
-        let note = self.get_note();
+        let step = self.get_step();
         let p = match field {
-            0 => note.pitch.get_or_insert(ROOT_PITCH),
-            1 => note.sound.get_or_insert(0),
+            0 => step.pitch.get_or_insert(ROOT_PITCH),
+            1 => step.sound.get_or_insert(0),
             _ => return,
         };
         let val = *p as i32 + delta;
         *p = i32::max(0, i32::min(val, 127)) as u8;
     }
 
-    fn get_note(&mut self) -> &mut Note {
+    fn get_step(&mut self) -> &mut Step {
         let track = self.selected_track();
         let pattern = &mut self.patterns[self.edit_index];
         let track = &mut pattern.tracks[track];
-        &mut track.notes[self.cursor.line]
+        &mut track.steps[self.cursor.line]
     }
 
     pub fn iter_tracks(&self) -> impl Iterator<Item = TrackView> {
         let pattern = &self.patterns[self.edit_index];
         pattern.tracks.iter().map(move |track| TrackView {
-            notes: &track.notes[0..pattern.num_lines],
+            steps: &track.steps[0..pattern.num_lines],
         })
     }
 
@@ -138,21 +138,21 @@ impl Editor {
             .enumerate()
             .flat_map(move |(i, track)| {
                 track
-                    .notes
+                    .steps
                     .iter()
                     .enumerate()
-                    .filter(move |(l, note)| *l == line && note.pitch.is_some())
-                    .map(move |(_, &note)| NoteEvent {
-                        pitch: note.pitch.unwrap(),
+                    .filter(move |(l, step)| *l == line && step.pitch.is_some())
+                    .map(move |(_, &step)| NoteEvent {
+                        pitch: step.pitch.unwrap(),
                         track: i as u8,
-                        sound: note.sound.unwrap_or(i as u8),
+                        sound: step.sound.unwrap_or(i as u8),
                     })
             })
     }
 }
 
 pub struct TrackView<'a> {
-    pub notes: &'a [Note],
+    pub steps: &'a [Step],
 }
 
 pub struct Pattern {
@@ -165,7 +165,7 @@ impl Default for Pattern {
         let mut tracks = Vec::with_capacity(MAX_TRACKS);
         for _ in 0..MAX_TRACKS {
             tracks.push(Track {
-                notes: vec![Note::default(); MAX_PATTERN_LENGTH],
+                steps: vec![Step::default(); MAX_PATTERN_LENGTH],
             })
         }
         Self {
@@ -176,16 +176,16 @@ impl Default for Pattern {
 }
 
 struct Track {
-    notes: Vec<Note>,
+    steps: Vec<Step>,
 }
 
 #[derive(Copy, Clone, Debug)]
-pub struct Note {
+pub struct Step {
     pub pitch: Option<u8>,
     pub sound: Option<u8>,
 }
 
-impl Default for Note {
+impl Default for Step {
     fn default() -> Self {
         Self {
             pitch: None,
