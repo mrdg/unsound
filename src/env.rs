@@ -84,7 +84,7 @@ impl Envelope {
                 }
             }
         }
-        return self.val;
+        self.val
     }
 
     pub fn start_attack(&mut self) {

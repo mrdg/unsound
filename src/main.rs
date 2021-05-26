@@ -80,11 +80,11 @@ fn run_audio(mut engine: Engine) -> Result<AudioStream> {
         engine.render(&mut buf);
 
         let mut i = 0;
-        for j in 0..buf.len() {
-            buffer[i] = buf[j].0;
-            buffer[i + 1] = buf[j].1;
+        for frame in &mut buf[..] {
+            buffer[i] = frame.0;
+            buffer[i + 1] = frame.1;
             i += 2;
-            buf[j] = (0.0, 0.0);
+            *frame = (0.0, 0.0);
         }
 
         portaudio::Continue

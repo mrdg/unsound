@@ -40,10 +40,8 @@ impl InputQueue {
             let sender = sender.clone();
             thread::spawn(move || {
                 let stdin = io::stdin();
-                for evt in stdin.keys() {
-                    if let Ok(key) = evt {
-                        sender.send(Input::Key(key)).expect("send keyboard input");
-                    }
+                for key in stdin.keys().flatten() {
+                    sender.send(Input::Key(key)).expect("send keyboard input");
                 }
             })
         };
@@ -137,8 +135,8 @@ fn handle_command_input(key: Key, app: &mut App) -> Result<()> {
 }
 
 fn exec_command(app: &mut App) -> Result<()> {
-    let parts: Vec<&str> = app.command.buffer.split(" ").collect();
-    if parts.len() == 0 {
+    let parts: Vec<&str> = app.command.buffer.split(' ').collect();
+    if parts.is_empty() {
         return Err(anyhow!("invalid command"));
     }
 

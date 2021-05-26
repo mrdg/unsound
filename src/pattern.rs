@@ -30,6 +30,12 @@ pub struct Editor {
     pub cursor: Position,
 }
 
+impl Default for Editor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Editor {
     pub fn new() -> Self {
         let mut patterns = Vec::with_capacity(MAX_PATTERNS);
@@ -83,6 +89,7 @@ impl Editor {
     }
 
     pub fn set_number(&mut self, num: i32) {
+        #[allow(clippy::single_match)]
         match self.cursor.column % NUM_TRACK_LANES {
             1 => {
                 let step = self.get_step();

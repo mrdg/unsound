@@ -193,7 +193,7 @@ impl Engine {
     }
 
     fn app_send(&mut self, cmd: AppCommand) {
-        if let Err(_) = self.prod.push(cmd) {
+        if self.prod.push(cmd).is_err() {
             eprintln!("unable to update client state");
         }
     }
