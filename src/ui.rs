@@ -159,7 +159,7 @@ impl StatefulWidget for CommandLine {
     type State = CommandState;
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
-        if state.buffer.len() > 0 {
+        if !state.buffer.is_empty() {
             buf.set_string(area.left(), area.top(), ":", Style::default());
             buf.set_string(area.left() + 1, area.top(), &state.buffer, Style::default());
         }

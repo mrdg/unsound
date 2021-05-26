@@ -253,7 +253,7 @@ impl FileBrowser {
         if parts.len() > 3 {
             for part in &parts[..parts.len() - 1] {
                 self.short_dir
-                    .push(part.as_str().chars().nth(0).unwrap().to_string());
+                    .push(part.as_str().chars().next().unwrap().to_string());
             }
             self.short_dir.push(parts.last().unwrap());
         } else {

@@ -14,6 +14,12 @@ pub struct EditorState {
     offset: usize,
 }
 
+impl Default for EditorState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl EditorState {
     pub fn new() -> Self {
         Self { offset: 0 }
@@ -57,6 +63,7 @@ impl<'a> Editor<'a> {
             let base_style = self.get_base_style(line);
             let column = index * 2;
 
+            #[allow(clippy::identity_op)]
             let pitch_style = self.get_input_style(line, column + 0);
             let pitch = match note.pitch {
                 Some(pitch) => &NOTE_NAMES[pitch as usize],

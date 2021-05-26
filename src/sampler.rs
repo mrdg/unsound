@@ -205,7 +205,7 @@ impl Device for Sampler {
                 continue;
             }
             let sound = &voice.sound.as_ref().unwrap();
-            for i in 0..buffer.len() {
+            for dst_frame in buffer.iter_mut() {
                 let pos = voice.position as usize;
                 let weight = voice.position - pos as f32;
                 let inverse_weight = 1.0 - weight;
@@ -215,8 +215,8 @@ impl Device for Sampler {
                 let new_frame = frame * inverse_weight + next_frame * weight;
 
                 let env = voice.env.value() as f32;
-                buffer[i].0 += voice.volume * amp * env * new_frame.left;
-                buffer[i].1 += voice.volume * amp * env * new_frame.right;
+                dst_frame.0 += voice.volume * amp * env * new_frame.left;
+                dst_frame.1 += voice.volume * amp * env * new_frame.right;
                 voice.position += voice.pitch_ratio;
                 if voice.position >= (sound.buf.len() - 1) as f32 {
                     voice.state = VoiceState::Free;
