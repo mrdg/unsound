@@ -1,6 +1,5 @@
 extern crate anyhow;
 extern crate atomic_float;
-extern crate portaudio;
 
 #[macro_use]
 extern crate lazy_static;
@@ -14,16 +13,14 @@ mod pattern;
 mod sampler;
 mod ui;
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use app::{Action, App, AppCommand};
 use camino::Utf8PathBuf;
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use engine::{Engine, EngineCommand, EngineParams};
-use portaudio::stream_flags as paflags;
-use portaudio::OutputStreamCallbackArgs;
-use portaudio::PortAudio;
 use ringbuf::RingBuffer;
 
-const SAMPLE_RATE: f64 = 44_100.0;
+const SAMPLE_RATE: f64 = 48000.0;
 const FRAMES_PER_BUFFER: u32 = 256;
 
 fn main() {
@@ -42,7 +39,8 @@ fn run() -> Result<()> {
     let params = EngineParams::default();
     let engine = Engine::new(params.clone(), engine_rcv, app_send);
     let mut app = App::new(params, app_recv, engine_send)?;
-    let mut stream = run_audio(engine)?;
+    let stream = start_audio(engine)?;
+    stream.play()?;
 
     // Load some default sounds for easier testing
     for (i, path) in vec![
@@ -58,39 +56,39 @@ fn run() -> Result<()> {
     {
         app.take(Action::LoadSound(i, Utf8PathBuf::from(path)))?;
     }
-
-    let result = app.run();
-
-    stream.stop()?;
-    stream.close()?;
-
-    result
+    app.run()
 }
 
-type AudioStream = portaudio::Stream<portaudio::NonBlocking, portaudio::Output<f32>>;
+fn start_audio(mut engine: Engine) -> Result<cpal::Stream> {
+    let host = cpal::default_host();
+    let device = host
+        .default_output_device()
+        .ok_or(anyhow!("can't find output device"))?;
 
-fn run_audio(mut engine: Engine) -> Result<AudioStream> {
-    let pa = PortAudio::new()?;
-    let mut settings =
-        pa.default_output_stream_settings::<f32>(2, SAMPLE_RATE, FRAMES_PER_BUFFER)?;
-    settings.flags = paflags::CLIP_OFF;
+    let mut config = device.default_output_config()?.config();
+    config.sample_rate = cpal::SampleRate(SAMPLE_RATE as u32);
+    config.buffer_size = cpal::BufferSize::Fixed(FRAMES_PER_BUFFER);
+    config.channels = 2;
 
-    let mut buf = [(0., 0.); FRAMES_PER_BUFFER as usize];
-    let callback = move |OutputStreamCallbackArgs { buffer, .. }| {
-        engine.render(&mut buf);
+    // Allocate buffer size x 2, because sometimes cpal requests more than the
+    // configured buffer size when switching the output device.
+    let mut buf = [(0.0, 0.0); 2 * FRAMES_PER_BUFFER as usize];
 
-        let mut i = 0;
-        for frame in &mut buf[..] {
-            buffer[i] = frame.0;
-            buffer[i + 1] = frame.1;
-            i += 2;
-            *frame = (0.0, 0.0);
-        }
+    let stream = device.build_output_stream(
+        &config,
+        move |output: &mut [f32], _: &cpal::OutputCallbackInfo| {
+            let buf_size = output.len() / 2;
+            engine.render(&mut buf[..buf_size]);
+            let mut i = 0;
+            for frame in &mut buf[..buf_size] {
+                output[i] = frame.0;
+                output[i + 1] = frame.1;
+                i += 2;
+                *frame = (0.0, 0.0);
+            }
+        },
+        move |err| eprintln!("error while processing audio {}", err),
+    )?;
 
-        portaudio::Continue
-    };
-
-    let mut stream = pa.open_non_blocking_stream(settings, callback)?;
-    stream.start()?;
     Ok(stream)
 }
