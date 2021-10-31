@@ -1,41 +1,24 @@
-use crate::engine::{EngineCommand, EngineParam, EngineParams};
 use crate::input;
-use crate::input::{CommandState, Focus, Input, InputQueue};
-use crate::param::Param;
-use crate::pattern::{Editor, Move, MAX_TRACKS};
+use crate::input::{CommandState, Focus, Input, InputQueue, Move};
+use crate::pattern::{Position, MAX_COLS, NUM_TRACK_LANES};
 use crate::sampler::Sampler;
+use crate::state::{AppControl, SharedState};
 use crate::ui;
 use crate::ui::editor::EditorState;
 use anyhow::{anyhow, Result};
 use camino::{Utf8Path, Utf8PathBuf};
-use ringbuf::{Consumer, Producer};
 use std::fs;
 use std::fs::DirEntry;
 use std::io;
-use std::sync::atomic::Ordering;
-use std::sync::Arc;
 use termion::{input::MouseTerminal, raw::IntoRawMode, screen::AlternateScreen};
 use tui::{backend::TermionBackend, widgets::ListState, Terminal};
 
-pub struct TrackSettings {
-    pub sample_path: Utf8PathBuf,
-    pub params: Vec<(String, Param)>,
-}
-
 pub struct App {
-    cons: Consumer<AppCommand>,
-    prod: Producer<EngineCommand>,
-
-    pub editor: Editor,
-
-    pub selected_track: usize,
-    pub instruments: Vec<Option<TrackSettings>>,
+    pub control: AppControl,
 
     pub file_browser: FileBrowser,
-    pub current_line: usize,
     pub should_stop: bool,
-    pub engine_params: EngineParams,
-
+    pub cursor: Position,
     pub focus: Focus,
     pub files: ListState,
     pub instrument_list: ListState,
@@ -45,50 +28,24 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(
-        params: EngineParams,
-        cons: Consumer<AppCommand>,
-        prod: Producer<EngineCommand>,
-    ) -> Result<Self> {
-        let file_browser = FileBrowser::with_path("./sounds")?;
-        let mut instruments = Vec::with_capacity(MAX_TRACKS);
-        for _ in 0..MAX_TRACKS {
-            instruments.push(None);
-        }
-
+    pub fn new(store: AppControl) -> Result<Self> {
         let mut file_state = ListState::default();
         file_state.select(Some(0));
 
         Ok(App {
-            cons,
-            prod,
-            editor: Editor::new(),
-            selected_track: 0,
-            current_line: 0,
-            instruments,
+            cursor: Position { line: 0, column: 0 },
+            control: store,
             should_stop: false,
-            engine_params: params,
-            file_browser,
+            file_browser: FileBrowser::with_path("./sounds")?,
             params: ListState::default(),
             instrument_list: ListState::default(),
             files: file_state,
-            edit_state: EditorState::new(),
+            edit_state: EditorState::default(),
             focus: Focus::Editor,
             command: CommandState {
                 buffer: String::with_capacity(1024),
             },
         })
-    }
-
-    pub fn run_commands(&mut self) {
-        while let Some(update) = self.cons.pop() {
-            match update {
-                AppCommand::SetCurrentTick(tick) => {
-                    let pattern = self.editor.current_pattern();
-                    self.current_line = tick % pattern.num_lines;
-                }
-            }
-        }
     }
 
     pub fn run(mut self) -> Result<()> {
@@ -100,7 +57,6 @@ impl App {
         let mut terminal = Terminal::new(backend)?;
 
         loop {
-            self.run_commands();
             if self.should_stop {
                 return Ok(());
             }
@@ -119,83 +75,67 @@ impl App {
                 self.should_stop = true;
             }
             Action::LoadSound(i, path) => {
-                let sound = Sampler::load_sound(&path)?;
-                self.instruments[i] = Some(TrackSettings {
-                    sample_path: path,
-                    params: Vec::new(),
-                });
-                self.engine_send(EngineCommand::LoadSound(i, Arc::new(sound)))?;
+                let sound = Sampler::load_sound(path)?;
+                self.control.set_sound(i, sound);
             }
             Action::PreviewSound(path) => {
-                let sound = Sampler::load_sound(&path)?;
-                self.engine_send(EngineCommand::PreviewSound(Arc::new(sound)))?;
+                let sound = Sampler::load_sound(path)?;
+                self.control.preview_sound(sound)?
             }
             Action::InsertNote(pitch) => {
-                let oct = self.engine_params.get(EngineParam::Octave) as u8;
+                let oct = self.control.octave() as u8;
                 let pitch = oct * 12 + pitch;
-                self.editor.set_pitch(pitch);
-                self.engine_send(EngineCommand::InputNote(self.editor.cursor, pitch))?;
-                self.take(Action::MoveCursor(Move::Down))?;
+                let pos = self.cursor;
+                self.control.update_pattern(|p| p.set_pitch(pos, pitch));
+                self.move_cursor(Move::Down);
             }
             Action::InsertNumber(num) => {
-                self.editor.set_number(num);
-                self.engine_send(EngineCommand::InputNumber(self.editor.cursor, num))?;
+                let pos = self.cursor;
+                self.control.update_pattern(|p| p.set_number(pos, num));
             }
             Action::ChangeValue(delta) => {
-                self.editor.change_value(delta);
-                self.engine_send(EngineCommand::ChangeValue(self.editor.cursor, delta))?;
+                let pos = self.cursor;
+                self.control.update_pattern(|p| p.change_value(pos, delta));
             }
             Action::DeleteNote => {
-                self.editor.delete_value();
-                self.engine_send(EngineCommand::DeleteValue(self.editor.cursor))?;
+                let pos = self.cursor;
+                self.control.update_pattern(|p| p.delete_value(pos));
             }
             Action::TogglePlay => {
-                let val = self.engine_params.is_playing.load(Ordering::Relaxed);
-                self.engine_params.is_playing.store(!val, Ordering::Relaxed);
+                self.control.toggle_play();
             }
-            Action::IncrParam(param_index) => {
-                let track = self.selected_track;
-                if let Some(track) = &mut self.instruments[track] {
-                    if let Some((_, param)) = track.params.get_mut(param_index) {
-                        param.incr();
-                    }
-                }
+            Action::SetBpm(bpm) => {
+                self.control.set_bpm(bpm.parse()?);
             }
-            Action::DecrParam(param_index) => {
-                let track = self.selected_track;
-                if let Some(track) = &mut self.instruments[track] {
-                    if let Some((_, param)) = track.params.get_mut(param_index) {
-                        param.decr();
-                    }
-                }
-            }
-            Action::UpdateEngineParam(param, value) => {
-                let param = match param {
-                    EngineParam::Bpm => &self.engine_params.bpm,
-                    EngineParam::LinesPerBeat => &self.engine_params.lines_per_beat,
-                    EngineParam::Octave => &self.engine_params.octave,
-                };
-                param.store(value.parse()?, Ordering::Relaxed);
-            }
-            Action::MoveCursor(cursor_move) => {
-                self.editor.move_cursor(cursor_move);
-                self.selected_track = self.editor.selected_track();
+            Action::SetOctave(octave) => {
+                self.control.set_octave(octave.parse()?);
             }
         }
         Ok(())
     }
 
-    fn engine_send(&mut self, cmd: EngineCommand) -> Result<()> {
-        if self.prod.push(cmd).is_err() {
-            Err(anyhow!("unable to send message to engine"))
-        } else {
-            Ok(())
+    pub fn move_cursor(&mut self, m: Move) {
+        let pattern = self.control.pattern();
+        let height = pattern.num_lines;
+        let cursor = &mut self.cursor;
+        let step = 1;
+        match m {
+            Move::Left if cursor.column == 0 => {}
+            Move::Left => cursor.column -= step,
+            Move::Right => cursor.column = usize::min(cursor.column + step, MAX_COLS - step),
+            Move::Start => cursor.column = 0,
+            Move::End => cursor.column = MAX_COLS - step,
+            Move::Up if cursor.line == 0 => {}
+            Move::Up => cursor.line -= 1,
+            Move::Down => cursor.line = usize::min(height - 1, cursor.line + 1),
+            Move::Top => cursor.line = 0,
+            Move::Bottom => cursor.line = height - 1,
         }
     }
-}
 
-pub enum AppCommand {
-    SetCurrentTick(usize),
+    pub fn selected_track(&self) -> usize {
+        self.cursor.column / NUM_TRACK_LANES
+    }
 }
 
 pub enum Action {
@@ -207,10 +147,8 @@ pub enum Action {
     DeleteNote,
     ChangeValue(i32),
     TogglePlay,
-    IncrParam(usize),
-    DecrParam(usize),
-    UpdateEngineParam(EngineParam, String),
-    MoveCursor(Move),
+    SetBpm(String),
+    SetOctave(String),
 }
 
 pub struct FileBrowser {

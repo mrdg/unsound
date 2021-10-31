@@ -8,17 +8,21 @@ mod app;
 mod engine;
 mod env;
 mod input;
-mod param;
 mod pattern;
 mod sampler;
+mod state;
 mod ui;
 
 use anyhow::{anyhow, Result};
-use app::{Action, App, AppCommand};
+use app::{Action, App};
+use assert_no_alloc::*;
 use camino::Utf8PathBuf;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use engine::{Engine, EngineCommand, EngineParams};
-use ringbuf::RingBuffer;
+use engine::Engine;
+
+#[cfg(debug_assertions)]
+#[global_allocator]
+static A: AllocDisabler = AllocDisabler;
 
 const SAMPLE_RATE: f64 = 48000.0;
 const FRAMES_PER_BUFFER: u32 = 256;
@@ -33,12 +37,9 @@ fn main() {
 }
 
 fn run() -> Result<()> {
-    let (engine_send, engine_rcv) = RingBuffer::<EngineCommand>::new(16).split();
-    let (app_send, app_recv) = RingBuffer::<AppCommand>::new(16).split();
-
-    let params = EngineParams::default();
-    let engine = Engine::new(params.clone(), engine_rcv, app_send);
-    let mut app = App::new(params, app_recv, engine_send)?;
+    let (app_control, engine_control) = state::controls();
+    let engine = Engine::new(engine_control);
+    let mut app = App::new(app_control)?;
     let stream = start_audio(engine)?;
     stream.play()?;
 
@@ -63,7 +64,7 @@ fn start_audio(mut engine: Engine) -> Result<cpal::Stream> {
     let host = cpal::default_host();
     let device = host
         .default_output_device()
-        .ok_or(anyhow!("can't find output device"))?;
+        .ok_or_else(|| anyhow!("can't find output device"))?;
 
     let mut config = device.default_output_config()?.config();
     config.sample_rate = cpal::SampleRate(SAMPLE_RATE as u32);
@@ -77,15 +78,17 @@ fn start_audio(mut engine: Engine) -> Result<cpal::Stream> {
     let stream = device.build_output_stream(
         &config,
         move |output: &mut [f32], _: &cpal::OutputCallbackInfo| {
-            let buf_size = output.len() / 2;
-            engine.render(&mut buf[..buf_size]);
-            let mut i = 0;
-            for frame in &mut buf[..buf_size] {
-                output[i] = frame.0;
-                output[i + 1] = frame.1;
-                i += 2;
-                *frame = (0.0, 0.0);
-            }
+            assert_no_alloc(|| {
+                let buf_size = output.len() / 2;
+                engine.render(&mut buf[..buf_size]);
+                let mut i = 0;
+                for frame in &mut buf[..buf_size] {
+                    output[i] = frame.0;
+                    output[i + 1] = frame.1;
+                    i += 2;
+                    *frame = (0.0, 0.0);
+                }
+            });
         },
         move |err| eprintln!("error while processing audio {}", err),
     )?;

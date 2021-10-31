@@ -1,8 +1,9 @@
 pub mod editor;
 
+use crate::app::App;
 pub use crate::input::{CommandState, Input, InputQueue};
+use crate::state::SharedState;
 pub use crate::ui::editor::{Editor, EditorState};
-use crate::{app::App, engine::EngineParam};
 use tui::{
     backend::Backend,
     buffer::Buffer,
@@ -41,7 +42,7 @@ pub fn draw<B: Backend>(f: &mut Frame<B>, app: &mut App) {
     let editor_area = editor_block.inner(main_sections[0]);
     f.render_widget(editor_block, main_sections[0]);
 
-    let editor = Editor::new(&app);
+    let editor = Editor::new(app);
     let mut edit_state = app.edit_state.clone();
     f.render_stateful_widget(&editor, editor_area, &mut edit_state);
 
@@ -63,22 +64,23 @@ fn render_sidebar<B: Backend>(f: &mut Frame<B>, app: &mut App, area: Rect) {
         .constraints([Constraint::Ratio(1, 3), Constraint::Ratio(2, 3)].as_ref())
         .split(area);
 
-    // Instruments
-    let instruments: Vec<ListItem> = app
-        .instruments
+    // Sounds
+    let sounds: Vec<ListItem> = app
+        .control
+        .sounds()
         .iter()
         .enumerate()
-        .map(|(i, track)| {
+        .map(|(i, snd)| {
             ListItem::new(Span::raw(format!(
                 " {:0width$} {}",
                 i,
-                track.as_ref().map_or("", |v| v.sample_path.as_ref()),
+                snd.as_ref().map_or("", |snd| snd.path.as_str()),
                 width = 2
             )))
         })
         .collect();
 
-    let instruments = List::new(instruments)
+    let instruments = List::new(sounds)
         .block(Block::default())
         .highlight_style(Style::default().fg(Color::White).bg(Color::Green));
 
@@ -122,9 +124,9 @@ struct StatusLine {
 impl StatusLine {
     fn new(app: &App) -> Self {
         Self {
-            bpm: app.engine_params.get(EngineParam::Bpm),
-            lines_per_beat: app.engine_params.get(EngineParam::LinesPerBeat),
-            octave: app.engine_params.get(EngineParam::Octave),
+            bpm: app.control.bpm(),
+            lines_per_beat: app.control.lines_per_beat(),
+            octave: app.control.octave(),
         }
     }
 }

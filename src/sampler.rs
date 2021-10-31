@@ -1,16 +1,11 @@
 use crate::engine::Device;
-use crate::param::Param;
+use crate::env::{Envelope, State as EnvelopeState};
 use crate::SAMPLE_RATE;
-use crate::{
-    env::{Envelope, State as EnvelopeState},
-    param::Unit,
-};
 use anyhow::Result;
-use atomic_float::AtomicF32;
+use basedrop::Shared;
 use camino::Utf8PathBuf;
 use hound::WavReader;
 use std::ops::{Add, Mul};
-use std::sync::{atomic::Ordering, Arc};
 
 pub const ROOT_PITCH: u8 = 48;
 
@@ -22,7 +17,7 @@ struct Voice {
     volume: f32,
     env: Envelope,
     column: usize,
-    sound: Option<Arc<Sound>>,
+    sound: Option<Shared<Sound>>,
 }
 
 #[derive(PartialEq, Debug)]
@@ -47,6 +42,7 @@ impl<'a> Voice {
 }
 
 pub struct Sound {
+    pub path: Utf8PathBuf,
     buf: Vec<Frame>,
     sample_rate: u32,
     offset: usize,
@@ -54,11 +50,11 @@ pub struct Sound {
 
 pub struct Sampler {
     voices: Vec<Voice>,
-    amp: Arc<AtomicF32>,
-    attack: Arc<AtomicF32>,
-    decay: Arc<AtomicF32>,
-    sustain: Arc<AtomicF32>,
-    release: Arc<AtomicF32>,
+    amp: f32,
+    attack: f32,
+    decay: f32,
+    sustain: f32,
+    release: f32,
 }
 
 impl Sampler {
@@ -69,16 +65,16 @@ impl Sampler {
             voices.push(Voice::new());
         }
         Self {
-            amp: Arc::new(AtomicF32::new(-6.0)),
-            attack: Arc::new(AtomicF32::new(0.005)),
-            decay: Arc::new(AtomicF32::new(0.25)),
-            sustain: Arc::new(AtomicF32::new(1.0)),
-            release: Arc::new(AtomicF32::new(0.3)),
+            amp: -6.0,
+            attack: 0.005,
+            decay: 0.25,
+            sustain: 1.0,
+            release: 0.3,
             voices,
         }
     }
 
-    pub fn load_sound(path: &Utf8PathBuf) -> Result<Sound> {
+    pub fn load_sound(path: Utf8PathBuf) -> Result<Sound> {
         let mut wav = WavReader::open(path.clone())?;
         let wav_spec = wav.spec();
         let bit_depth = wav_spec.bits_per_sample as f32;
@@ -105,52 +101,21 @@ impl Sampler {
             }
         }
         Ok(Sound {
+            path,
             sample_rate: wav_spec.sample_rate,
             buf: samples,
             offset,
         })
     }
 
-    pub fn params(&self) -> Vec<(String, Param)> {
-        vec![
-            (
-                "Amp",
-                Param::new(-60.0, Arc::clone(&self.amp), 6.0, 1.0).with_unit(Unit::Decibel),
-            ),
-            (
-                "Attack",
-                Param::new(0.0, Arc::clone(&self.attack), 15.0, 0.01).with_unit(Unit::Seconds),
-            ),
-            (
-                "Decay",
-                Param::new(0.0, Arc::clone(&self.decay), 15.0, 0.01).with_unit(Unit::Seconds),
-            ),
-            (
-                "Sustain",
-                Param::new(0.0, Arc::clone(&self.sustain), 15.0, 0.01),
-            ),
-            (
-                "Release",
-                Param::new(0.0, Arc::clone(&self.release), 15.0, 0.01).with_unit(Unit::Seconds),
-            ),
-        ]
-        .into_iter()
-        .map(|(k, v)| (String::from(k), v))
-        .collect()
-    }
-
-    pub fn note_on(&mut self, sound: Arc<Sound>, column: usize, pitch: u8, velocity: u8) {
+    pub fn note_on(&mut self, sound: Shared<Sound>, column: usize, pitch: u8, velocity: u8) {
         self.stop_note(column);
 
-        let attack = self.attack.load(Ordering::Relaxed);
-        let decay = self.decay.load(Ordering::Relaxed);
-        let sustain = self.sustain.load(Ordering::Relaxed);
-        let release = self.release.load(Ordering::Relaxed);
         if let Some(voice) = self.voices.iter_mut().find(|v| v.state == VoiceState::Free) {
-            voice.env.attack = attack;
-            voice.env.decay = decay;
-            voice.env.sustain = sustain;
-            voice.env.release = release;
+            voice.env.attack = self.attack;
+            voice.env.decay = self.decay;
+            voice.env.sustain = self.sustain;
+            voice.env.release = self.release;
             voice.env.start_attack();
             voice.state = VoiceState::Busy;
             voice.pitch = pitch;
@@ -194,7 +159,7 @@ fn gain_factor(db: f32) -> f32 {
 
 impl Device for Sampler {
     fn render(&mut self, buffer: &mut [(f32, f32)]) {
-        let amp = gain_factor(self.amp.load(Ordering::Relaxed));
+        let amp = gain_factor(self.amp);
 
         for voice in &mut self.voices {
             if voice.env.state == EnvelopeState::Init {

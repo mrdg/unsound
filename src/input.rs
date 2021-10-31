@@ -1,9 +1,6 @@
+use crate::app::{Action, App};
 use crate::pattern::NUM_TRACK_LANES;
-use crate::{
-    app::{Action, App},
-    engine::EngineParam,
-};
-use crate::{pattern::Move, ui::ListCursorExt};
+use crate::ui::ListCursorExt;
 use anyhow::{anyhow, Result};
 use std::{
     io,
@@ -112,7 +109,7 @@ pub fn handle(key: Key, app: &mut App) -> Result<()> {
                             app.file_browser.move_to(path)?;
                             app.files.select(Some(0));
                         } else {
-                            let i = app.selected_track;
+                            let i = app.selected_track();
                             app.take(Action::LoadSound(i, path))?;
                         }
                     }
@@ -142,8 +139,8 @@ fn exec_command(app: &mut App) -> Result<()> {
 
     let action = match parts[0] {
         "quit" | "exit" => Action::Exit,
-        "bpm" => Action::UpdateEngineParam(EngineParam::Bpm, parts[1].to_string()),
-        "oct" | "octave" => Action::UpdateEngineParam(EngineParam::Octave, parts[1].to_string()),
+        "bpm" => Action::SetBpm(parts[1].to_string()),
+        "oct" | "octave" => Action::SetOctave(parts[1].to_string()),
         _ => return Err(anyhow!("invalid command {}", parts[0])),
     };
 
@@ -151,22 +148,33 @@ fn exec_command(app: &mut App) -> Result<()> {
     app.take(action)
 }
 
+pub enum Move {
+    Left,
+    Right,
+    Up,
+    Down,
+    Start,
+    End,
+    Top,
+    Bottom,
+}
+
 fn handle_editor_input(key: Key, app: &mut App) -> Result<()> {
     match key {
         Key::Char(' ') => app.take(Action::TogglePlay)?,
-        Key::Ctrl('n') | Key::Down => app.take(Action::MoveCursor(Move::Down))?,
-        Key::Ctrl('p') | Key::Up => app.take(Action::MoveCursor(Move::Up))?,
-        Key::Ctrl('f') | Key::Right => app.take(Action::MoveCursor(Move::Right))?,
-        Key::Ctrl('b') | Key::Left => app.take(Action::MoveCursor(Move::Left))?,
-        Key::Ctrl('a') => app.take(Action::MoveCursor(Move::Start))?,
-        Key::Ctrl('e') => app.take(Action::MoveCursor(Move::End))?,
+        Key::Ctrl('n') | Key::Down => app.move_cursor(Move::Down),
+        Key::Ctrl('p') | Key::Up => app.move_cursor(Move::Up),
+        Key::Ctrl('f') | Key::Right => app.move_cursor(Move::Right),
+        Key::Ctrl('b') | Key::Left => app.move_cursor(Move::Left),
+        Key::Ctrl('a') => app.move_cursor(Move::Start),
+        Key::Ctrl('e') => app.move_cursor(Move::End),
         Key::Backspace => delete_note(app)?,
-        Key::Char('\n') => app.take(Action::MoveCursor(Move::Down))?,
+        Key::Char('\n') => app.move_cursor(Move::Down),
         Key::Char(']') => app.take(Action::ChangeValue(-1))?,
         Key::Char('[') => app.take(Action::ChangeValue(1))?,
         Key::Char('}') => app.take(Action::ChangeValue(-12))?,
         Key::Char('{') => app.take(Action::ChangeValue(12))?,
-        Key::Char(key) => match app.editor.cursor.column % NUM_TRACK_LANES {
+        Key::Char(key) => match app.cursor.column % NUM_TRACK_LANES {
             0 => insert_note(app, key)?,
             1 => insert_number(app, key)?,
             _ => {}
@@ -205,6 +213,6 @@ fn insert_number(app: &mut App, key: char) -> Result<()> {
 
 fn delete_note(app: &mut App) -> Result<()> {
     let result = app.take(Action::DeleteNote);
-    app.take(Action::MoveCursor(Move::Down))?;
+    app.move_cursor(Move::Down);
     result
 }

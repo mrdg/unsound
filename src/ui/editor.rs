@@ -1,6 +1,7 @@
-use crate::pattern::{Position, TrackView};
-use crate::{app::App, engine::EngineParam};
-
+use crate::app::App;
+use crate::pattern::{Pattern, Position, TrackView};
+use crate::state::SharedState;
+use basedrop::Shared;
 use tui::{
     buffer::Buffer,
     layout::Rect,
@@ -16,32 +17,31 @@ pub struct EditorState {
 
 impl Default for EditorState {
     fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl EditorState {
-    pub fn new() -> Self {
         Self { offset: 0 }
     }
 }
 
-pub struct Editor<'a> {
-    app: &'a App,
+pub struct Editor {
+    pattern: Shared<Pattern>,
     cursor: Position,
+    current_line: usize,
     lines_per_beat: usize,
 }
 
-impl<'a> Editor<'a> {
-    pub fn new(app: &'a App) -> Self {
+impl Editor {
+    pub fn new(app: &App) -> Self {
+        let pattern = app.control.pattern();
+        let current_line = app.control.current_tick() % pattern.num_lines as u64;
+
         Self {
-            app,
-            cursor: app.editor.cursor,
-            lines_per_beat: app.engine_params.get(EngineParam::LinesPerBeat) as usize,
+            pattern,
+            cursor: app.cursor,
+            current_line: current_line as usize,
+            lines_per_beat: app.control.lines_per_beat() as usize,
         }
     }
 
-    fn render_track(&self, area: Rect, buf: &mut Buffer, track: &'a TrackView, index: usize) {
+    fn render_track(&self, area: Rect, buf: &mut Buffer, track: &TrackView, index: usize) {
         let width = COLUMN_WIDTH;
 
         // Draw track header
@@ -98,7 +98,7 @@ impl<'a> Editor<'a> {
     }
 
     fn get_base_style(&self, line: usize) -> Style {
-        if line == self.app.current_line {
+        if line == self.current_line {
             Style::default().bg(Color::Blue)
         } else if line % self.lines_per_beat == 0 {
             Style::default().bg(Color::DarkGray)
@@ -108,14 +108,13 @@ impl<'a> Editor<'a> {
     }
 }
 
-impl<'a> StatefulWidget for &Editor<'a> {
+impl StatefulWidget for &Editor {
     type State = EditorState;
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
         let header_height = 1;
         let height = area.height as usize - header_height;
-        let num_lines = self.app.editor.num_lines();
-        let mut end_line = state.offset + std::cmp::min(height, num_lines);
+        let mut end_line = state.offset + std::cmp::min(height, self.pattern.num_lines);
 
         if self.cursor.line > end_line {
             end_line = self.cursor.line + 1;
@@ -129,7 +128,7 @@ impl<'a> StatefulWidget for &Editor<'a> {
         // TODO: add border here
         let left = area.left() + 1;
         for (i, step) in (state.offset..end_line).enumerate() {
-            let style = if step == self.app.current_line {
+            let style = if step == self.current_line {
                 Style::default().bg(Color::Blue).fg(Color::White)
             } else if step % self.lines_per_beat == 0 {
                 Style::default().bg(Color::DarkGray)
@@ -146,12 +145,12 @@ impl<'a> StatefulWidget for &Editor<'a> {
         }
 
         let mut x = area.x + 3;
-        for (i, track) in self.app.editor.iter_tracks().enumerate() {
+        for (i, track) in self.pattern.iter_tracks().enumerate() {
             let area = Rect {
                 x,
                 y: area.y,
                 width: COLUMN_WIDTH as u16 + 1, // add 1 for border
-                height: (num_lines + 1) as u16,
+                height: (self.pattern.num_lines + 1) as u16,
             };
             x += area.width;
             let block = Block::default().borders(Borders::RIGHT);
