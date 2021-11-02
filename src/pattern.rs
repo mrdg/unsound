@@ -49,13 +49,13 @@ impl Pattern {
         step.pitch = Some(pitch);
     }
 
-    pub fn set_number(&mut self, pos: Position, num: i32) {
+    pub fn set_sound(&mut self, pos: Position, num: u8) {
         #[allow(clippy::single_match)]
         match pos.column % NUM_TRACK_LANES {
             1 => {
                 let step = self.step(pos);
                 let s = step.sound.get_or_insert(0);
-                *s = ((*s as i32 * 10 + num) % 100) as u8;
+                *s = ((*s * 10 + num) % 100) as u8;
             }
             _ => {}
         }

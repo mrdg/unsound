@@ -175,8 +175,8 @@ fn handle_editor_input(key: Key, app: &mut App) -> Result<()> {
         Key::Char('}') => app.take(Action::ChangeValue(-12))?,
         Key::Char('{') => app.take(Action::ChangeValue(12))?,
         Key::Char(key) => match app.cursor.column % NUM_TRACK_LANES {
-            0 => insert_note(app, key)?,
-            1 => insert_number(app, key)?,
+            0 => set_pitch(app, key)?,
+            1 => set_sound(app, key)?,
             _ => {}
         },
         _ => {}
@@ -184,7 +184,7 @@ fn handle_editor_input(key: Key, app: &mut App) -> Result<()> {
     Ok(())
 }
 
-fn insert_note(app: &mut App, key: char) -> Result<()> {
+fn set_pitch(app: &mut App, key: char) -> Result<()> {
     let pitch = match key {
         'z' => 0,
         's' => 1,
@@ -200,13 +200,13 @@ fn insert_note(app: &mut App, key: char) -> Result<()> {
         'm' => 11,
         _ => return Ok(()),
     };
-    app.take(Action::InsertNote(pitch as u8))?;
+    app.take(Action::SetPitch(pitch as u8))?;
     Ok(())
 }
 
-fn insert_number(app: &mut App, key: char) -> Result<()> {
+fn set_sound(app: &mut App, key: char) -> Result<()> {
     if let Some(num) = key.to_digit(10) {
-        app.take(Action::InsertNumber(num as i32))?;
+        app.take(Action::SetSound(num as u8))?;
     }
     Ok(())
 }

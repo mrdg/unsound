@@ -82,16 +82,16 @@ impl App {
                 let sound = Sampler::load_sound(path)?;
                 self.control.preview_sound(sound)?
             }
-            Action::InsertNote(pitch) => {
+            Action::SetPitch(pitch) => {
                 let oct = self.control.octave() as u8;
                 let pitch = oct * 12 + pitch;
                 let pos = self.cursor;
                 self.control.update_pattern(|p| p.set_pitch(pos, pitch));
                 self.move_cursor(Move::Down);
             }
-            Action::InsertNumber(num) => {
+            Action::SetSound(num) => {
                 let pos = self.cursor;
-                self.control.update_pattern(|p| p.set_number(pos, num));
+                self.control.update_pattern(|p| p.set_sound(pos, num));
             }
             Action::ChangeValue(delta) => {
                 let pos = self.cursor;
@@ -142,8 +142,8 @@ pub enum Action {
     Exit,
     LoadSound(usize, Utf8PathBuf),
     PreviewSound(Utf8PathBuf),
-    InsertNote(u8),
-    InsertNumber(i32),
+    SetPitch(u8),
+    SetSound(u8),
     DeleteNote,
     ChangeValue(i32),
     TogglePlay,
