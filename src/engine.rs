@@ -42,12 +42,37 @@ impl Engine {
 
     pub fn render(&mut self, buffer: &mut [(f32, f32)]) {
         self.run_commands();
-        let mut block = Block { start: 0, end: 0 };
-        while self.next_block(&mut block, buffer.len()) {
+        let mut buffer = buffer;
+        while let Some(block_size) = self.next_block(buffer.len()) {
             for chan in &mut self.channels {
-                chan.render(&mut buffer[block.start..block.end]);
+                chan.render(&mut buffer[..block_size]);
             }
-            self.preview.render(&mut buffer[block.start..block.end]);
+            self.preview.render(&mut buffer[..block_size]);
+            buffer = &mut buffer[block_size..];
+        }
+    }
+
+    fn next_block(&mut self, frames: usize) -> Option<usize> {
+        if self.samples_to_tick == 0 && self.control.is_playing() {
+            let pattern = self.control.pattern();
+            for note in pattern.iter_notes(self.control.current_tick()) {
+                if let Some(snd) = self.control.sound(note.sound as usize) {
+                    let sampler = &mut self.channels[note.track as usize];
+                    sampler.note_on(snd.to_owned(), note.track as usize, note.pitch, 80);
+                }
+            }
+            let samples_to_tick =
+                (SAMPLE_RATE * 60.) / (self.control.lines_per_beat() * self.control.bpm()) as f64;
+            self.samples_to_tick = samples_to_tick.round() as usize;
+            self.control.tick();
+        }
+
+        let block_size = usize::min(frames, self.samples_to_tick);
+        self.samples_to_tick -= block_size;
+        if block_size > 0 {
+            Some(block_size)
+        } else {
+            None
         }
     }
 
@@ -59,43 +84,5 @@ impl Engine {
                 }
             }
         }
-    }
-
-    fn next_block(&mut self, block: &mut Block, num_frames: usize) -> bool {
-        if !self.control.is_playing() {
-            if block.end == num_frames {
-                return false;
-            }
-            block.end = num_frames;
-            return true;
-        }
-
-        self.samples_to_tick -= block.end - block.start;
-        if block.end == num_frames {
-            return false;
-        }
-        if block.end != 0 {
-            block.start = block.end;
-        }
-
-        if self.samples_to_tick == 0 {
-            let pattern = self.control.pattern();
-            for note in pattern.iter_notes(self.control.current_tick()) {
-                if let Some(snd) = self.control.sound(note.sound as usize) {
-                    let sampler = &mut self.channels[note.track as usize];
-                    sampler.note_on(snd.to_owned(), note.track as usize, note.pitch, 80);
-                }
-            }
-            let num_samples =
-                (SAMPLE_RATE * 60.) / (self.control.lines_per_beat() * self.control.bpm()) as f64;
-            self.samples_to_tick = num_samples.round() as usize;
-            self.control.tick();
-        }
-
-        block.end = block.start + self.samples_to_tick;
-        if block.end > num_frames {
-            block.end = num_frames;
-        }
-        true
     }
 }
