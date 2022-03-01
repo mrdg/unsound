@@ -2,10 +2,10 @@ use crate::engine::Device;
 use crate::env::{Envelope, State as EnvelopeState};
 use crate::SAMPLE_RATE;
 use anyhow::Result;
-use basedrop::Shared;
 use camino::Utf8PathBuf;
 use hound::WavReader;
 use std::ops::{Add, Mul};
+use std::sync::Arc;
 
 pub const ROOT_PITCH: u8 = 48;
 
@@ -17,7 +17,9 @@ struct Voice {
     volume: f32,
     env: Envelope,
     column: usize,
-    sound: Option<Shared<Sound>>,
+    // TODO: it's possible that a voice ends up holding the last reference to a sound, which will
+    // cause a deallocation on the audio thread.
+    sound: Option<Arc<Sound>>,
 }
 
 #[derive(PartialEq, Debug)]
@@ -108,7 +110,7 @@ impl Sampler {
         })
     }
 
-    pub fn note_on(&mut self, sound: Shared<Sound>, column: usize, pitch: u8, velocity: u8) {
+    pub fn note_on(&mut self, sound: Arc<Sound>, column: usize, pitch: u8, velocity: u8) {
         self.stop_note(column);
 
         if let Some(voice) = self.voices.iter_mut().find(|v| v.state == VoiceState::Free) {

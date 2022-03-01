@@ -1,5 +1,4 @@
 extern crate anyhow;
-extern crate atomic_float;
 
 #[macro_use]
 extern crate lazy_static;
@@ -7,14 +6,14 @@ extern crate lazy_static;
 mod app;
 mod engine;
 mod env;
+mod files;
 mod input;
 mod pattern;
 mod sampler;
-mod state;
-mod ui;
+mod view;
 
 use anyhow::{anyhow, Result};
-use app::{Action, App};
+use app::Msg;
 use assert_no_alloc::*;
 use camino::Utf8PathBuf;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -37,10 +36,8 @@ fn main() {
 }
 
 fn run() -> Result<()> {
-    let (app_control, engine_control) = state::controls();
-    let engine = Engine::new(engine_control);
-    let mut app = App::new(app_control)?;
-    let stream = start_audio(engine)?;
+    let (mut app, engine) = app::new()?;
+    let stream = run_audio(engine)?;
     stream.play()?;
 
     // Load some default sounds for easier testing
@@ -55,12 +52,13 @@ fn run() -> Result<()> {
     .iter()
     .enumerate()
     {
-        app.take(Action::LoadSound(i, Utf8PathBuf::from(path)))?;
+        app.send(Msg::LoadSound(i, Utf8PathBuf::from(path)))?;
     }
+
     app.run()
 }
 
-fn start_audio(mut engine: Engine) -> Result<cpal::Stream> {
+fn run_audio(mut engine: Engine) -> Result<cpal::Stream> {
     let host = cpal::default_host();
     let device = host
         .default_output_device()

@@ -1,15 +1,43 @@
 use crate::sampler::ROOT_PITCH;
 
-pub const NUM_TRACK_LANES: usize = 2;
-pub const MAX_TRACKS: usize = 8;
-pub const MAX_COLS: usize = MAX_TRACKS * NUM_TRACK_LANES;
+pub const INPUTS_PER_STEP: usize = 2;
+pub const MAX_TRACKS: usize = 16;
 
 const MAX_PATTERN_LENGTH: usize = 512;
+pub const MAX_PITCH: u8 = 109;
 
-#[derive(Clone, Copy, Debug)]
+pub const MAX_PATTERNS: usize = 256;
+
+pub const DEFAULT_PATTERN_COUNT: usize = 8;
+
+pub enum InputType {
+    Pitch,
+    Sound,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
 pub struct Position {
     pub line: usize,
     pub column: usize,
+}
+
+impl Position {
+    pub fn track(&self) -> usize {
+        self.column / INPUTS_PER_STEP
+    }
+
+    pub fn clamp(&mut self, pattern_size: (usize, usize)) {
+        self.line = usize::min(pattern_size.0 - 1, self.line);
+        self.column = usize::min(pattern_size.1 - 1, self.column);
+    }
+
+    pub fn input_type(&self) -> InputType {
+        match self.column % INPUTS_PER_STEP {
+            0 => InputType::Pitch,
+            1 => InputType::Sound,
+            _ => unreachable!(),
+        }
+    }
 }
 
 pub struct TrackView<'a> {
@@ -18,12 +46,12 @@ pub struct TrackView<'a> {
 
 #[derive(Clone, Debug)]
 pub struct Pattern {
-    pub num_lines: usize,
+    pub length: usize,
     tracks: Vec<Track>,
 }
 
-impl Default for Pattern {
-    fn default() -> Self {
+impl Pattern {
+    pub fn new() -> Self {
         let mut tracks = Vec::with_capacity(MAX_TRACKS);
         for _ in 0..MAX_TRACKS {
             tracks.push(Track {
@@ -31,66 +59,61 @@ impl Default for Pattern {
             })
         }
         Self {
-            num_lines: 32,
+            length: 32,
             tracks,
         }
     }
-}
 
-impl Pattern {
-    fn step(&mut self, pos: Position) -> &mut Step {
-        let track = pos.column / NUM_TRACK_LANES;
-        let track = &mut self.tracks[track];
-        &mut track.steps[pos.line]
+    pub fn size(&self) -> (usize, usize) {
+        (self.length, self.tracks.len() * INPUTS_PER_STEP)
     }
 
     pub fn set_pitch(&mut self, pos: Position, pitch: u8) {
-        let step = self.step(pos);
-        step.pitch = Some(pitch);
+        if pitch <= MAX_PITCH {
+            let v = self.input(pos);
+            *v = Some(pitch);
+        }
     }
 
-    pub fn set_sound(&mut self, pos: Position, num: u8) {
-        #[allow(clippy::single_match)]
-        match pos.column % NUM_TRACK_LANES {
-            1 => {
-                let step = self.step(pos);
-                let s = step.sound.get_or_insert(0);
-                *s = ((*s * 10 + num) % 100) as u8;
+    pub fn set_sound(&mut self, pos: Position, num: i32) {
+        let s = self.input(pos).get_or_insert(0);
+        let i = *s as i32;
+        *s = ((i * 10 + num) % 100) as u8;
+    }
+
+    pub fn delete(&mut self, pos: Position) {
+        let v = self.input(pos);
+        *v = None;
+    }
+
+    pub fn inc(&mut self, pos: Position, step_size: StepSize) {
+        let attrs = input_attrs(pos.column % INPUTS_PER_STEP);
+        let add = attrs.step_sizes[step_size as usize];
+        let input = self.input(pos).get_or_insert(attrs.default);
+        if let Some(new) = input.checked_add(add) {
+            if new < attrs.max {
+                *input = new
             }
-            _ => {}
         }
     }
 
-    pub fn delete_value(&mut self, pos: Position) {
-        let field = pos.column % NUM_TRACK_LANES;
-        let step = self.step(pos);
-        match field {
-            0 => step.pitch = None,
-            1 => step.sound = None,
-            _ => {}
+    pub fn dec(&mut self, pos: Position, step_size: StepSize) {
+        let attrs = input_attrs(pos.column % INPUTS_PER_STEP);
+        let sub = attrs.step_sizes[step_size as usize];
+        let input = self.input(pos).get_or_insert(attrs.default);
+        if let Some(new) = input.checked_sub(sub) {
+            *input = new
         }
-    }
-
-    pub fn change_value(&mut self, pos: Position, delta: i32) {
-        let field = pos.column % NUM_TRACK_LANES;
-        let step = self.step(pos);
-        let p = match field {
-            0 => step.pitch.get_or_insert(ROOT_PITCH),
-            1 => step.sound.get_or_insert(0),
-            _ => return,
-        };
-        let val = *p as i32 + delta;
-        *p = i32::max(0, i32::min(val, 127)) as u8;
     }
 
     pub fn iter_tracks(&self) -> impl Iterator<Item = TrackView> {
         self.tracks.iter().map(move |track| TrackView {
-            steps: &track.steps[0..self.num_lines],
+            steps: &track.steps[0..self.length],
         })
     }
 
     pub fn iter_notes(&self, tick: u64) -> impl Iterator<Item = NoteEvent> + '_ {
-        let line = (tick % self.num_lines as u64) as usize;
+        let line = (tick % self.length as u64) as usize;
         self.tracks.iter().enumerate().flat_map(move |(i, track)| {
             track
                 .steps
@@ -104,6 +127,38 @@ impl Pattern {
                 })
         })
     }
+
+    fn input(&mut self, pos: Position) -> &mut Option<u8> {
+        let track = pos.column / INPUTS_PER_STEP;
+        let track = &mut self.tracks[track];
+        let step = &mut track.steps[pos.line];
+        match pos.column % INPUTS_PER_STEP {
+            0 => &mut step.pitch,
+            1 => &mut step.sound,
+            _ => unreachable!(),
+        }
+    }
+}
+
+struct InputAttrs {
+    max: u8,
+    default: u8,
+    step_sizes: [u8; 2],
+}
+
+fn input_attrs(offset: usize) -> InputAttrs {
+    match offset {
+        0 => InputAttrs {
+            max: MAX_PITCH,
+            default: ROOT_PITCH,
+            step_sizes: [1, 12],
+        },
+        _ => InputAttrs {
+            max: 99,
+            default: 0,
+            step_sizes: [1, 1],
+        },
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -111,23 +166,20 @@ struct Track {
     steps: Vec<Step>,
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, Default)]
 pub struct Step {
     pub pitch: Option<u8>,
     pub sound: Option<u8>,
-}
-
-impl Default for Step {
-    fn default() -> Self {
-        Self {
-            pitch: None,
-            sound: None,
-        }
-    }
 }
 
 pub struct NoteEvent {
     pub pitch: u8,
     pub sound: u8,
     pub track: u8,
+}
+
+#[derive(Copy, Clone)]
+pub enum StepSize {
+    Default = 0,
+    Large,
 }

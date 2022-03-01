@@ -1,54 +1,55 @@
-use crate::input;
-use crate::input::{CommandState, Focus, Input, InputQueue, Move};
-use crate::pattern::{Position, MAX_COLS, NUM_TRACK_LANES};
-use crate::sampler::Sampler;
-use crate::state::{AppControl, SharedState};
-use crate::ui;
-use crate::ui::editor::EditorState;
 use anyhow::{anyhow, Result};
-use camino::{Utf8Path, Utf8PathBuf};
-use std::fs;
-use std::fs::DirEntry;
+use camino::Utf8PathBuf;
+use rand::prelude::*;
+use ringbuf::{Producer, RingBuffer};
+use triple_buffer::{Input, Output, TripleBuffer};
+
+use crate::engine::Engine;
+use crate::files::FileBrowser;
+use crate::pattern::{Position, StepSize, DEFAULT_PATTERN_COUNT, MAX_PATTERNS, MAX_TRACKS};
+use crate::sampler::Sampler;
+use crate::view;
+use crate::view::{InputQueue, View};
+use crate::{engine::EngineCommand, pattern::Pattern, sampler::Sound};
+use std::collections::HashMap;
 use std::io;
+use std::sync::Arc;
+
+use std::fmt;
+use std::fmt::Display;
+use std::fmt::Formatter;
+
 use termion::{input::MouseTerminal, raw::IntoRawMode, screen::AlternateScreen};
-use tui::{backend::TermionBackend, widgets::ListState, Terminal};
+use tui::{backend::TermionBackend, Terminal};
 
 pub struct App {
-    pub control: AppControl,
-
-    pub file_browser: FileBrowser,
-    pub should_stop: bool,
-    pub cursor: Position,
-    pub focus: Focus,
-    pub files: ListState,
-    pub instrument_list: ListState,
-    pub params: ListState,
-    pub edit_state: EditorState,
-    pub command: CommandState,
+    state: AppState,
+    state_buf: Input<AppState>,
+    engine_state_buf: Output<EngineState>,
+    producer: Producer<EngineCommand>,
+    file_browser: FileBrowser,
+    sound_cache: HashMap<Utf8PathBuf, Arc<Sound>>,
 }
 
 impl App {
-    pub fn new(store: AppControl) -> Result<Self> {
-        let mut file_state = ListState::default();
-        file_state.select(Some(0));
-
-        Ok(App {
-            cursor: Position { line: 0, column: 0 },
-            control: store,
-            should_stop: false,
+    fn new(
+        state: AppState,
+        state_buf: Input<AppState>,
+        engine_state_buf: Output<EngineState>,
+        producer: Producer<EngineCommand>,
+    ) -> Result<Self> {
+        let app = Self {
+            state,
+            state_buf,
+            engine_state_buf,
+            producer,
             file_browser: FileBrowser::with_path("./sounds")?,
-            params: ListState::default(),
-            instrument_list: ListState::default(),
-            files: file_state,
-            edit_state: EditorState::default(),
-            focus: Focus::Editor,
-            command: CommandState {
-                buffer: String::with_capacity(1024),
-            },
-        })
+            sound_cache: HashMap::new(),
+        };
+        Ok(app)
     }
 
-    pub fn run(mut self) -> Result<()> {
+    pub fn run(&mut self) -> Result<()> {
         let mut input = InputQueue::new();
         let stdout = io::stdout().into_raw_mode()?;
         let stdout = MouseTerminal::from(stdout);
@@ -56,168 +57,415 @@ impl App {
         let backend = TermionBackend::new(stdout);
         let mut terminal = Terminal::new(backend)?;
 
+        let mut view = View::new();
         loop {
-            if self.should_stop {
-                return Ok(());
-            }
-            terminal.draw(|f| ui::draw(f, &mut self))?;
+            self.engine_state_buf.update();
+            let ctx = ViewContext {
+                app_state: &self.state,
+                engine_state: self.engine_state_buf.output_buffer(),
+                file_browser: &self.file_browser,
+            };
+            terminal.draw(|f| view.render(f, ctx))?;
+
             match input.next()? {
-                // TODO: don't exit on error from handle_input but print to console
-                Input::Key(key) => input::handle(key, &mut self)?,
-                Input::Tick => {}
+                view::Input::Key(key) => {
+                    let msg = view.handle_input(key, ctx);
+                    if msg.is_exit() {
+                        return Ok(());
+                    }
+                    self.send(msg)?;
+                    let input_buf = self.state_buf.input_buffer();
+                    input_buf.clone_from(&self.state);
+                    self.state_buf.publish();
+                }
+                view::Input::Tick => {}
             }
         }
     }
 
-    pub fn take(&mut self, action: Action) -> Result<()> {
-        match action {
-            Action::Exit => {
-                self.should_stop = true;
+    pub fn send(&mut self, msg: Msg) -> Result<()> {
+        use Msg::*;
+        match msg {
+            Noop => {}
+            Exit => {}
+            TogglePlay => {
+                self.state.is_playing = !self.state.is_playing;
             }
-            Action::LoadSound(i, path) => {
-                let sound = Sampler::load_sound(path)?;
-                self.control.set_sound(i, sound);
-            }
-            Action::PreviewSound(path) => {
-                let sound = Sampler::load_sound(path)?;
-                self.control.preview_sound(sound)?
-            }
-            Action::SetPitch(pitch) => {
-                let oct = self.control.octave() as u8;
+            SetPitch(pos, pitch) => {
+                let oct = self.state.octave as u8;
                 let pitch = oct * 12 + pitch;
-                let pos = self.cursor;
-                self.control.update_pattern(|p| p.set_pitch(pos, pitch));
-                self.move_cursor(Move::Down);
+                self.update_pattern(|p| p.set_pitch(pos, pitch));
             }
-            Action::SetSound(num) => {
-                let pos = self.cursor;
-                self.control.update_pattern(|p| p.set_sound(pos, num));
+            SetSound(pos, idx) => self.update_pattern(|p| p.set_sound(pos, idx)),
+            DeleteNoteValue(pos) => self.update_pattern(|p| p.delete(pos)),
+            PatternInc(pos, step_size) => self.update_pattern(|p| p.inc(pos, step_size)),
+            PatternDec(pos, step_size) => self.update_pattern(|p| p.dec(pos, step_size)),
+            SetBpm(bpm) => self.state.bpm = bpm,
+            SetOct(oct) => self.state.octave = oct,
+            LoadSound(idx, path) => {
+                let snd = self.load_sound(path)?;
+                self.state.sounds[idx] = Some(snd);
             }
-            Action::ChangeValue(delta) => {
-                let pos = self.cursor;
-                self.control.update_pattern(|p| p.change_value(pos, delta));
+            LoopToggle(idx) => {
+                self.state.loop_range = match self.state.loop_range {
+                    Some((start, end)) => {
+                        if start == idx && idx == end {
+                            None
+                        } else {
+                            Some((idx, idx))
+                        }
+                    }
+                    None => Some((idx, idx)),
+                }
             }
-            Action::DeleteNote => {
-                let pos = self.cursor;
-                self.control.update_pattern(|p| p.delete_value(pos));
+            LoopAdd(idx) => {
+                self.state.loop_range = match self.state.loop_range {
+                    Some((start, end)) => {
+                        if idx < start {
+                            Some((idx, end))
+                        } else {
+                            Some((start, idx))
+                        }
+                    }
+                    None => Some((idx, idx)),
+                }
             }
-            Action::TogglePlay => {
-                self.control.toggle_play();
+            PreviewSound(path) => {
+                let snd = self.load_sound(path)?;
+                if self
+                    .producer
+                    .push(EngineCommand::PreviewSound(snd))
+                    .is_err()
+                {
+                    return Err(anyhow!("unable to send message to engine"));
+                }
             }
-            Action::SetBpm(bpm) => {
-                self.control.set_bpm(bpm.parse()?);
+            SelectPattern(idx) => {
+                if idx < self.state.song.len() {
+                    self.state.selected_pattern = idx;
+                }
             }
-            Action::SetOctave(octave) => {
-                self.control.set_octave(octave.parse()?);
+            NextPattern => {
+                self.state.selected_pattern =
+                    usize::min(self.state.selected_pattern + 1, self.state.song.len() - 1)
             }
+            PrevPattern => {
+                self.state.selected_pattern = self.state.selected_pattern.saturating_sub(1);
+            }
+            DeletePattern(idx) => {
+                // Ensure we have at least one to avoid dealing with having no patterns
+                if self.state.song.len() > 1 {
+                    let pattern_id = self.state.song.remove(idx);
+                    if !self.state.song.contains(&pattern_id) {
+                        self.state.patterns.remove(&pattern_id);
+                    }
+                    if self.state.selected_pattern >= self.state.song.len() {
+                        self.state.selected_pattern = self.state.selected_pattern.saturating_sub(1);
+                    }
+                    // Ensure that loop start and end are in bounds with respect to song vector
+                    if let Some(loop_range) = &mut self.state.loop_range {
+                        let end = self.state.song.len() - 1;
+                        *loop_range = (usize::min(loop_range.0, end), usize::min(loop_range.1, end))
+                    }
+                }
+            }
+            CreatePattern(idx) => {
+                if self.state.patterns.len() < MAX_PATTERNS {
+                    let id = self.next_pattern_id();
+                    let pattern = Pattern::new();
+                    self.state.patterns.insert(id, Arc::new(pattern));
+                    if let Some(idx) = idx {
+                        self.state.song.insert(idx + 1, id);
+                    } else {
+                        self.state.song.push(id);
+                    }
+                }
+            }
+            RepeatPattern(idx) => {
+                let pattern_id = self.state.song[idx];
+                self.state.song.insert(idx + 1, pattern_id);
+            }
+            ClonePattern(idx) => {
+                let pattern_id = self.state.song[idx];
+                let clone = self.state.patterns.get(&pattern_id).unwrap().clone();
+                let id = self.next_pattern_id();
+                self.state.patterns.insert(id, clone);
+                self.state.song.insert(idx + 1, id);
+            }
+            SetPatternLen(len) => self.update_pattern(|p| p.length = len),
+            ChangeDir(dir) => self.file_browser.move_to(dir)?,
         }
+
         Ok(())
     }
 
-    pub fn move_cursor(&mut self, m: Move) {
-        let pattern = self.control.pattern();
-        let height = pattern.num_lines;
-        let cursor = &mut self.cursor;
-        let step = 1;
-        match m {
-            Move::Left if cursor.column == 0 => {}
-            Move::Left => cursor.column -= step,
-            Move::Right => cursor.column = usize::min(cursor.column + step, MAX_COLS - step),
-            Move::Start => cursor.column = 0,
-            Move::End => cursor.column = MAX_COLS - step,
-            Move::Up if cursor.line == 0 => {}
-            Move::Up => cursor.line -= 1,
-            Move::Down => cursor.line = usize::min(height - 1, cursor.line + 1),
-            Move::Top => cursor.line = 0,
-            Move::Bottom => cursor.line = height - 1,
-        }
+    fn load_sound(&mut self, path: Utf8PathBuf) -> Result<Arc<Sound>> {
+        let snd = if let Some(snd) = self.sound_cache.get(&path) {
+            snd.clone()
+        } else {
+            if self.sound_cache.len() > 50 {
+                // Delete random entry so the cache doesn't grow forever
+                // TODO: do something smarter like LRU (maybe based on sample length)
+                let key = self
+                    .sound_cache
+                    .keys()
+                    .choose(&mut rand::thread_rng())
+                    .map(|k| k.to_owned());
+                if let Some(key) = key {
+                    self.sound_cache.remove(&key);
+                }
+            }
+            let snd = Arc::new(Sampler::load_sound(path.clone())?);
+            self.sound_cache.insert(path.clone(), snd.clone());
+            snd
+        };
+        Ok(snd)
     }
 
-    pub fn selected_track(&self) -> usize {
-        self.cursor.column / NUM_TRACK_LANES
+    fn next_pattern_id(&self) -> PatternID {
+        if self.state.patterns.is_empty() {
+            return PatternID(0);
+        }
+        let mut max = 0;
+        for id in self.state.patterns.keys() {
+            if id.0 > max {
+                max = id.0;
+            }
+        }
+        PatternID(max + 1)
+    }
+
+    fn update_pattern<F>(&mut self, f: F)
+    where
+        F: Fn(&mut Pattern),
+    {
+        let id = self.state.song[self.state.selected_pattern];
+        if let Some(pattern) = self.state.patterns.get(&id) {
+            let mut new = (**pattern).clone();
+            f(&mut new);
+            self.state.patterns.insert(id, Arc::new(new));
+        }
     }
 }
 
-pub enum Action {
+#[derive(Clone)]
+pub struct EngineState {
+    pub current_tick: usize,
+    pub current_pattern: usize,
+}
+
+#[derive(Clone)]
+pub struct AppState {
+    lines_per_beat: u16,
+    bpm: u16,
+    octave: u16,
+    is_playing: bool,
+    selected_pattern: usize,
+    patterns: HashMap<PatternID, Arc<Pattern>>,
+    song: Vec<PatternID>,
+    loop_range: Option<(usize, usize)>,
+    sounds: Vec<Option<Arc<Sound>>>,
+}
+
+pub fn new() -> Result<(App, Engine)> {
+    let mut sounds = Vec::with_capacity(MAX_TRACKS);
+    for _ in 0..sounds.capacity() {
+        sounds.push(None);
+    }
+
+    let patterns = HashMap::new();
+    let song = Vec::new();
+
+    let app_state = AppState {
+        bpm: 120,
+        lines_per_beat: 4,
+        octave: 4,
+        is_playing: false,
+        patterns,
+        song,
+        selected_pattern: 0,
+        loop_range: None,
+        sounds,
+    };
+
+    let engine_state = EngineState {
+        current_pattern: 0,
+        current_tick: 0,
+    };
+
+    let (app_input, app_output) = TripleBuffer::new(&app_state).split();
+    let (engine_input, engine_output) = TripleBuffer::new(&engine_state).split();
+
+    let (producer, consumer) = RingBuffer::<EngineCommand>::new(16).split();
+
+    let engine = Engine::new(engine_state, engine_input, app_output, consumer);
+    let mut app = App::new(app_state, app_input, engine_output, producer)?;
+
+    for _ in 0..DEFAULT_PATTERN_COUNT {
+        app.send(Msg::CreatePattern(None))?
+    }
+
+    Ok((app, engine))
+}
+
+pub enum Msg {
+    Noop,
     Exit,
+    TogglePlay,
+    SetPitch(Position, u8),
+    PatternInc(Position, StepSize),
+    PatternDec(Position, StepSize),
+    SetSound(Position, i32),
+    DeleteNoteValue(Position),
     LoadSound(usize, Utf8PathBuf),
     PreviewSound(Utf8PathBuf),
-    SetPitch(u8),
-    SetSound(u8),
-    DeleteNote,
-    ChangeValue(i32),
-    TogglePlay,
-    SetBpm(String),
-    SetOctave(String),
+    LoopAdd(usize),
+    LoopToggle(usize),
+    SelectPattern(usize),
+    NextPattern,
+    PrevPattern,
+    DeletePattern(usize),
+    CreatePattern(Option<usize>),
+    RepeatPattern(usize),
+    ClonePattern(usize),
+    SetPatternLen(usize),
+    ChangeDir(Utf8PathBuf),
+    SetBpm(u16),
+    SetOct(u16),
 }
 
-pub struct FileBrowser {
-    entries: Vec<DirEntry>,
-    dir: Utf8PathBuf,
-    short_dir: Utf8PathBuf,
+impl Msg {
+    pub fn is_exit(&self) -> bool {
+        matches!(self, Self::Exit)
+    }
 }
 
-impl FileBrowser {
-    pub fn with_path<P: AsRef<Utf8Path>>(path: P) -> Result<FileBrowser> {
-        let mut fb = FileBrowser {
-            entries: Vec::new(),
-            dir: Utf8PathBuf::new(),
-            short_dir: Utf8PathBuf::new(),
-        };
-        fb.move_to(path)?;
-        Ok(fb)
+pub trait SharedState {
+    fn shared_state(&self) -> (&AppState, &EngineState);
+
+    fn app(&self) -> &AppState {
+        self.shared_state().0
+    }
+    fn engine(&self) -> &EngineState {
+        self.shared_state().1
     }
 
-    pub fn move_up(&mut self) -> Result<()> {
-        if let Some(parent) = self.dir.clone().parent() {
-            self.move_to(parent)?;
-        }
-        Ok(())
+    fn lines_per_beat(&self) -> u16 {
+        self.app().lines_per_beat
     }
 
-    pub fn move_to<P: AsRef<Utf8Path>>(&mut self, path: P) -> Result<()> {
-        self.entries.clear();
-        for entry in fs::read_dir(path.as_ref())? {
-            let entry = entry?;
-            if entry.path().is_dir() || entry.path().extension().map_or(false, |ext| ext == "wav") {
-                self.entries.push(entry);
-            }
-        }
-        self.dir = Utf8PathBuf::from_path_buf(path.as_ref().canonicalize()?)
-            .map_err(|path| anyhow!("invalid path {}", path.display()))?;
+    fn bpm(&self) -> u16 {
+        self.app().bpm
+    }
 
-        self.short_dir.clear();
-        let parts: Vec<_> = self.dir.components().collect();
-        if parts.len() > 3 {
-            for part in &parts[..parts.len() - 1] {
-                self.short_dir
-                    .push(part.as_str().chars().next().unwrap().to_string());
-            }
-            self.short_dir.push(parts.last().unwrap());
+    fn octave(&self) -> u16 {
+        self.app().octave
+    }
+
+    fn is_playing(&self) -> bool {
+        self.app().is_playing
+    }
+
+    fn active_pattern_index(&self) -> usize {
+        self.engine().current_pattern
+    }
+
+    fn current_line(&self) -> usize {
+        // TODO: lines vs ticks
+        self.engine().current_tick
+    }
+
+    fn sounds(&self) -> &Vec<Option<Arc<Sound>>> {
+        &self.app().sounds
+    }
+
+    fn pattern(&self, idx: usize) -> Option<&Arc<Pattern>> {
+        self.app()
+            .song
+            .get(idx)
+            .and_then(|id| self.app().patterns.get(id))
+    }
+
+    fn selected_pattern(&self) -> &Pattern {
+        let id = self.app().song[self.app().selected_pattern];
+        self.app().patterns.get(&id).unwrap()
+    }
+
+    fn selected_pattern_index(&self) -> usize {
+        self.app().selected_pattern
+    }
+
+    fn song(&self) -> &Vec<PatternID> {
+        &self.app().song
+    }
+
+    fn loop_contains(&self, idx: usize) -> bool {
+        if let Some(loop_range) = self.app().loop_range {
+            loop_range.0 <= idx && idx <= loop_range.1
         } else {
-            self.short_dir = self.dir.clone();
+            false
         }
-        self.entries.sort_by_key(|e| e.path());
-        Ok(())
     }
+}
 
-    pub fn num_entries(&self) -> usize {
-        self.entries.len()
+#[derive(Copy, Clone)]
+pub struct ViewContext<'a> {
+    app_state: &'a AppState,
+    engine_state: &'a EngineState,
+    pub file_browser: &'a FileBrowser,
+}
+
+impl<'a> SharedState for ViewContext<'a> {
+    fn shared_state(&self) -> (&AppState, &EngineState) {
+        (self.app_state, self.engine_state)
     }
+}
 
-    pub fn iter(&self) -> impl Iterator<Item = String> + '_ {
-        self.entries
+impl<'a> ViewContext<'a> {
+    pub fn patterns(&self) -> impl Iterator<Item = &Arc<Pattern>> {
+        self.song()
             .iter()
-            .map(|entry| entry.file_name().to_string_lossy().to_string())
+            .map(move |id| self.app().patterns.get(id).unwrap())
+    }
+}
+
+pub struct AudioContext<'a> {
+    app_state: &'a AppState,
+    engine_state: &'a EngineState,
+}
+
+impl<'a> AudioContext<'a> {
+    pub fn new(app_state: &'a AppState, engine_state: &'a EngineState) -> Self {
+        Self {
+            app_state,
+            engine_state,
+        }
     }
 
-    pub fn get(&self, i: usize) -> Option<Utf8PathBuf> {
-        self.entries
-            .get(i)
-            .and_then(|entry| Utf8PathBuf::from_path_buf(entry.path()).ok())
+    pub fn next_pattern(&self) -> usize {
+        let (start, end) = match self.app().loop_range {
+            Some(range) => range,
+            None => (0, self.app().song.len() - 1),
+        };
+        let mut next = self.engine().current_pattern + 1;
+        if next > end {
+            next = start;
+        }
+        next
     }
+}
 
-    pub fn current_dir(&self) -> String {
-        self.short_dir.to_string()
+impl<'a> SharedState for AudioContext<'a> {
+    fn shared_state(&self) -> (&AppState, &EngineState) {
+        (self.app_state, self.engine_state)
+    }
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
+pub struct PatternID(u64);
+
+impl Display for PatternID {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
     }
 }
