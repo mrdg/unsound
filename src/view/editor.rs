@@ -166,7 +166,7 @@ impl<'a> StatefulWidget for &Editor<'a> {
 
         let mut x = area.x + STEP_COLUMN_WIDTH as u16;
         for (i, track) in pattern.iter_tracks().enumerate() {
-            let mut borders = Borders::RIGHT;
+            let mut borders = Borders::RIGHT | Borders::BOTTOM;
             let mut width = COLUMN_WIDTH + 1;
             if i == 0 {
                 // first track column also has a left border
@@ -178,7 +178,7 @@ impl<'a> StatefulWidget for &Editor<'a> {
                 x,
                 y: area.y,
                 width: width as u16,
-                height: (last_line - state.offset + 1) as u16,
+                height: (last_line - state.offset + 2) as u16,
             };
             x += width as u16;
 
