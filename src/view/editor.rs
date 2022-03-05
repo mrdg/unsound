@@ -148,6 +148,8 @@ impl<'a> StatefulWidget for &Editor<'a> {
         let steps = state.offset..last_line;
 
         // Draw the step indicator next to the pattern grid
+        let style = Style::default().fg(Color::Indexed(241));
+        buf.set_string(left, area.top(), format!("{:>3}", pattern.length), style);
         for (i, step) in steps.clone().enumerate() {
             let style = if self.current_line.is_some() && self.current_line.unwrap() == step {
                 Style::default().bg(Color::Blue).fg(Color::White)
