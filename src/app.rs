@@ -284,7 +284,7 @@ pub fn new() -> Result<(App, Engine)> {
         patterns,
         song,
         selected_pattern: 0,
-        loop_range: None,
+        loop_range: Some((0, 0)),
         sounds,
     };
 
