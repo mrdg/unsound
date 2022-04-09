@@ -48,14 +48,14 @@ impl<'a> TrackContext<'a> {
     fn new(track: usize, ctx: &'a AudioContext) -> Self {
         Self {
             volume: ctx.track_volume(track) as f32,
-            sounds: &ctx.sounds(),
+            sounds: ctx.sounds(),
         }
     }
 
     fn for_preview(ctx: &'a AudioContext) -> Self {
         Self {
             volume: 0.6,
-            sounds: &ctx.sounds(),
+            sounds: ctx.sounds(),
         }
     }
 
@@ -135,13 +135,13 @@ impl Engine {
             let master = self.tracks.get_mut(&ctx.master_track().id).unwrap();
             master.rms.add_frames(&self.sum_buf[..block_size]);
 
-            for i in 0..block_size {
-                buffer[i] = self.sum_buf[i];
+            for (i, frame) in buffer.iter_mut().enumerate().take(block_size) {
+                *frame = self.sum_buf[i];
                 self.sum_buf[i] = Stereo::ZERO;
             }
 
             let ctx = TrackContext::for_preview(&ctx);
-            self.preview.render(ctx, &mut buffer);
+            self.preview.render(ctx, buffer);
             buffer = &mut buffer[block_size..];
         }
 
@@ -175,7 +175,7 @@ impl Engine {
                     }
                     let track_id = ctx.tracks()[note.track as usize].id;
                     let track = self.tracks.get_mut(&track_id).unwrap();
-                    for (_, device) in &mut track.devices {
+                    for device in &mut track.devices.values_mut() {
                         let ctx = TrackContext::new(note.track as usize, &ctx);
                         device.send_event(ctx, &note);
                     }

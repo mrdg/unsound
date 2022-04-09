@@ -287,7 +287,7 @@ impl<'a> StatefulWidget for &Editor<'a> {
             let block = Block::default().borders(borders);
             let inner = block.inner(area);
             block.render(area, buf);
-            self.render_track_steps(inner, buf, &track, idx, &steps);
+            self.render_track_steps(inner, buf, track, idx, &steps);
 
             // Draw mixer channel
             let area = Rect {
@@ -300,7 +300,7 @@ impl<'a> StatefulWidget for &Editor<'a> {
             let block = Block::default().borders(borders);
             let inner = block.inner(area);
             block.render(area, buf);
-            self.render_mixer_controls(&track, inner, buf);
+            self.render_mixer_controls(track, inner, buf);
 
             x += width as u16;
         };
@@ -308,12 +308,6 @@ impl<'a> StatefulWidget for &Editor<'a> {
         for (i, track) in self.ctx.iter_tracks().enumerate() {
             render_track(&track, i);
         }
-
-        // let track = self.ctx.master_track();
-        // // NOTE: render_track expects a track index to determine e.g whether
-        // // a step is highlighted, but that's never the case for the master track
-        // // so just pass usize::MAX for now
-        // render_track(&track, usize::MAX);
     }
 }
 
