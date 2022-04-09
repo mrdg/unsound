@@ -8,7 +8,7 @@ use crate::audio::Stereo;
 use crate::engine::{self, INSTRUMENT_TRACKS, TOTAL_TRACKS};
 use crate::files::FileBrowser;
 use crate::pattern::{Position, Step, StepSize, MAX_PATTERNS};
-use crate::sampler;
+use crate::sampler::{self, Sampler};
 use crate::view;
 use crate::view::{InputQueue, View};
 use crate::{engine::EngineCommand, pattern::Pattern, sampler::Sound};
@@ -207,24 +207,26 @@ impl App {
             VolumeDec(track) => self.track_volume(track).dec(),
             SetVolume(track, value) => self.track_volume(track).set(value),
             CreateTrack(idx, track_type) => {
-                let default_effects =
-                    vec![(self.id_generator.device(), Box::new(engine::Volume {}))];
+                let track_id = self.id_generator.track();
+
+                let cmd = EngineCommand::CreateTrack(track_id, Box::new(engine::Track::new()));
+                self.send_to_engine(cmd)?;
+
+                let sampler = Box::new(Sampler::new());
+                let sampler_id = self.id_generator.device();
+                self.send_to_engine(EngineCommand::CreateDevice(track_id, sampler_id, sampler))?;
+
+                let volume = Box::new(engine::Volume {});
+                let volume_id = self.id_generator.device();
+                self.send_to_engine(EngineCommand::CreateDevice(track_id, volume_id, volume))?;
 
                 let track = Track {
-                    id: self.id_generator.track(),
-                    effects: default_effects.iter().map(|effect| effect.0).collect(),
+                    id: track_id,
+                    devices: vec![sampler_id, volume_id],
                     muted: false,
                     track_type,
                     volume: Volume::new(-6.0),
                 };
-
-                let cmd = EngineCommand::CreateTrack(track.id, Box::new(engine::Track::new()));
-                self.send_to_engine(cmd)?;
-
-                for effect in default_effects {
-                    let cmd = EngineCommand::CreateEffect(track.id, effect.0, effect.1);
-                    self.send_to_engine(cmd)?;
-                }
                 self.state.tracks.insert(idx, track);
             }
         }
@@ -336,7 +338,7 @@ pub struct AppState {
 #[derive(Clone)]
 pub struct Track {
     pub id: TrackID,
-    pub effects: Vec<DeviceID>,
+    pub devices: Vec<DeviceID>,
     pub track_type: TrackType,
     volume: Volume,
     muted: bool,

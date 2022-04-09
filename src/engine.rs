@@ -7,6 +7,7 @@ use triple_buffer::Input;
 
 use crate::app::{AppState, AudioContext, DeviceID, EngineState, SharedState, TrackID};
 use crate::audio::{Buffer, Rms, Stereo};
+use crate::pattern::NoteEvent;
 use crate::sampler::{Sampler, Sound, ROOT_PITCH};
 use crate::{INTERNAL_BUFFER_SIZE, SAMPLE_RATE};
 
@@ -19,48 +20,60 @@ const RMS_WINDOW_SIZE: usize = SAMPLE_RATE as usize / 10 * 3;
 pub enum EngineCommand {
     PreviewSound(Arc<Sound>),
     CreateTrack(TrackID, Box<Track>),
-    CreateEffect(TrackID, DeviceID, Box<dyn Device + Send>),
+    CreateDevice(TrackID, DeviceID, Box<dyn Device + Send>),
 }
 
 pub trait Device {
-    fn render(&mut self, ctx: ChannelContext<'_>, buffer: &mut [Stereo]);
+    fn render(&mut self, ctx: TrackContext, buffer: &mut [Stereo]);
+    fn send_event(&mut self, _ctx: TrackContext, _event: &NoteEvent) {}
 }
 
 pub struct Volume {}
 
 impl Device for Volume {
-    fn render(&mut self, ctx: ChannelContext<'_>, buffer: &mut [Stereo]) {
-        let v = ctx.volume() as f32;
+    fn render(&mut self, ctx: TrackContext<'_>, buffer: &mut [Stereo]) {
         for frame in buffer.iter_mut() {
-            *frame = *frame * v;
+            *frame = *frame * ctx.volume;
         }
     }
 }
 
 #[derive(Copy, Clone)]
-pub struct ChannelContext<'a> {
-    ctx: AudioContext<'a>,
-    index: usize,
+pub struct TrackContext<'a> {
+    volume: f32,
+    sounds: &'a Vec<Option<Arc<Sound>>>,
 }
 
-impl ChannelContext<'_> {
-    fn volume(&self) -> f64 {
-        self.ctx.track_volume(self.index)
+impl<'a> TrackContext<'a> {
+    fn new(track: usize, ctx: &'a AudioContext) -> Self {
+        Self {
+            volume: ctx.track_volume(track) as f32,
+            sounds: &ctx.sounds(),
+        }
+    }
+
+    fn for_preview(ctx: &'a AudioContext) -> Self {
+        Self {
+            volume: 0.6,
+            sounds: &ctx.sounds(),
+        }
+    }
+
+    pub fn sound(&self, idx: usize) -> &Option<Arc<Sound>> {
+        &self.sounds[idx]
     }
 }
 
 pub struct Track {
-    sampler: Sampler,
-    effects: HashMap<DeviceID, Box<dyn Device + Send>>,
+    devices: HashMap<DeviceID, Box<dyn Device + Send>>,
     rms: Rms,
 }
 
 impl Track {
     pub fn new() -> Self {
         Self {
-            sampler: Sampler::new(),
             rms: Rms::new(RMS_WINDOW_SIZE),
-            effects: HashMap::with_capacity(MAX_TRACK_EFFECTS),
+            devices: HashMap::with_capacity(MAX_TRACK_EFFECTS),
         }
     }
 }
@@ -96,21 +109,18 @@ impl Engine {
         }
     }
 
-    pub fn render(&mut self, app_state: &AppState, buffer: &mut [Stereo]) {
+    pub fn render(&mut self, state: &AppState, buffer: &mut [Stereo]) {
         self.run_commands();
-        let ctx = AudioContext::new(app_state);
+        let ctx = AudioContext::new(state);
 
         let mut buffer = buffer;
         while let Some(block_size) = self.next_block(ctx, buffer.len()) {
             for (i, track_info) in ctx.instrument_tracks().enumerate() {
                 let track = self.tracks.get_mut(&track_info.id).unwrap();
 
-                let ctx = ChannelContext { ctx, index: i };
-                let sampler = &mut track.sampler;
-                sampler.render(ctx, &mut self.track_buf[..block_size]);
-
-                for device_id in &track_info.effects {
-                    let effect = track.effects.get_mut(device_id).unwrap();
+                let ctx = TrackContext::new(i, &ctx);
+                for device_id in &track_info.devices {
+                    let effect = track.devices.get_mut(device_id).unwrap();
                     effect.render(ctx, &mut self.track_buf[..block_size]);
                 }
 
@@ -130,7 +140,7 @@ impl Engine {
                 self.sum_buf[i] = Stereo::ZERO;
             }
 
-            let ctx = ChannelContext { ctx, index: 0 }; // TODO: figure out preview settings
+            let ctx = TrackContext::for_preview(&ctx);
             self.preview.render(ctx, &mut buffer);
             buffer = &mut buffer[block_size..];
         }
@@ -163,10 +173,11 @@ impl Engine {
                         // release don't keep playing
                         continue;
                     }
-                    if let Some(Some(snd)) = ctx.sounds().get(note.sound as usize) {
-                        let track = &ctx.tracks()[note.track as usize];
-                        let sampler = &mut self.tracks.get_mut(&track.id).unwrap().sampler;
-                        sampler.note_on(snd.to_owned(), note.track as usize, note.pitch, 100);
+                    let track_id = ctx.tracks()[note.track as usize].id;
+                    let track = self.tracks.get_mut(&track_id).unwrap();
+                    for (_, device) in &mut track.devices {
+                        let ctx = TrackContext::new(note.track as usize, &ctx);
+                        device.send_event(ctx, &note);
                     }
                 }
 
@@ -197,12 +208,12 @@ impl Engine {
                 EngineCommand::PreviewSound(snd) => {
                     self.preview.note_on(snd, 0, ROOT_PITCH, 80);
                 }
-                EngineCommand::CreateTrack(track_id, track_info) => {
-                    self.tracks.insert(track_id, track_info);
+                EngineCommand::CreateTrack(track_id, track) => {
+                    self.tracks.insert(track_id, track);
                 }
-                EngineCommand::CreateEffect(track_id, device_id, effect) => {
+                EngineCommand::CreateDevice(track_id, device_id, effect) => {
                     let track = self.tracks.get_mut(&track_id).unwrap();
-                    track.effects.insert(device_id, effect);
+                    track.devices.insert(device_id, effect);
                 }
             }
         }

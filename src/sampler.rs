@@ -1,6 +1,7 @@
 use crate::audio::{Frame, Stereo};
-use crate::engine::{ChannelContext, Device};
+use crate::engine::{Device, TrackContext};
 use crate::env::{Envelope, State as EnvelopeState};
+use crate::pattern::NoteEvent;
 use crate::SAMPLE_RATE;
 use anyhow::Result;
 use camino::Utf8PathBuf;
@@ -158,7 +159,7 @@ fn gain_factor(db: f32) -> f32 {
 }
 
 impl Device for Sampler {
-    fn render(&mut self, _ctx: ChannelContext, buffer: &mut [Stereo]) {
+    fn render(&mut self, _ctx: TrackContext, buffer: &mut [Stereo]) {
         for voice in &mut self.voices {
             if voice.env.state == EnvelopeState::Init {
                 voice.state = VoiceState::Free;
@@ -186,6 +187,12 @@ impl Device for Sampler {
                     break;
                 }
             }
+        }
+    }
+
+    fn send_event(&mut self, ctx: TrackContext, event: &NoteEvent) {
+        if let Some(snd) = ctx.sound(event.sound.into()) {
+            self.note_on(snd.to_owned(), event.track as usize, event.pitch, 100);
         }
     }
 }
