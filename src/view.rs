@@ -308,7 +308,7 @@ impl View {
                     if parts.is_empty() {
                         return Err(anyhow!("invalid command"));
                     }
-                    let change = match parts[0] {
+                    let msg = match parts[0] {
                         "oct" | "octave" => {
                             let oct: u16 = parts[1].parse()?;
                             if oct > 9 {
@@ -319,11 +319,22 @@ impl View {
                         "bpm" => Ok(SetBpm(parts[1].parse()?)),
                         "quit" | "q" | "exit" => Ok(Exit),
                         "setlength" if parts.len() == 2 => Ok(SetPatternLen(parts[1].parse()?)),
+                        "volume" => {
+                            let cmd = if parts.len() == 3 {
+                                let track: usize = parts[1].parse()?;
+                                let value: f64 = parts[2].parse()?;
+                                SetVolume(Some(track), value)
+                            } else {
+                                let value: f64 = parts[1].parse()?;
+                                SetVolume(None, value)
+                            };
+                            Ok(cmd)
+                        }
                         _ => Err(anyhow!("invalid command {}", parts[0])),
                     };
                     self.command.buffer.clear();
                     self.focus = Focus::Editor;
-                    return change;
+                    return msg;
                 }
                 Key::Backspace => {
                     self.command.buffer.pop();
@@ -340,6 +351,7 @@ impl View {
 
         match self.focus {
             Focus::Editor => match key {
+                Key::Alt('m') => return Ok(ToggleMute(self.cursor.track())),
                 Key::Char(' ') => return Ok(TogglePlay),
                 Key::Backspace => {
                     let change = DeleteNoteValue(self.cursor);
@@ -354,6 +366,8 @@ impl View {
                 Key::Ctrl('e') | Key::End => self.move_cursor(ctx, CursorMove::End),
                 Key::Ctrl('d') => return Ok(NextPattern),
                 Key::Ctrl('u') => return Ok(PrevPattern),
+                Key::Char('=') => return Ok(VolumeInc(Some(self.cursor.track()))),
+                Key::Char('-') => return Ok(VolumeDec(Some(self.cursor.track()))),
                 Key::Char('[') => return Ok(PatternInc(self.cursor, StepSize::Default)),
                 Key::Char(']') => return Ok(PatternDec(self.cursor, StepSize::Default)),
                 Key::Char('{') => return Ok(PatternInc(self.cursor, StepSize::Large)),

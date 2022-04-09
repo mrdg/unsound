@@ -1,7 +1,9 @@
 use std::ops::Range;
 
-use crate::app::{SharedState, ViewContext};
-use crate::pattern::{Position, TrackView, MAX_PITCH};
+use crate::app::{SharedState, TrackView, ViewContext};
+use crate::pattern::{Position, MAX_PITCH};
+use tui::layout::{Alignment, Constraint, Direction, Layout};
+use tui::widgets::Paragraph;
 use tui::{
     buffer::Buffer,
     layout::Rect,
@@ -46,7 +48,95 @@ impl<'a> Editor<'a> {
         }
     }
 
-    fn render_track(
+    fn render_mixer_controls(&self, track: &TrackView, area: Rect, buf: &mut Buffer) {
+        let mut meter_width = 2;
+        if area.width % 2 != 0 {
+            meter_width += 1;
+        }
+        let offset = (area.width - meter_width) / 2;
+
+        // VU meter
+        let meter = Rect {
+            x: area.x + offset,
+            y: area.y,
+            width: meter_width,
+            height: area.height - 4,
+        };
+
+        let mut db = 0;
+        for i in 0..meter.height {
+            let rms = self.ctx.rms(track.index);
+            let meter_color = |value: f32| {
+                let db = db as f32;
+                if value > db {
+                    if value < db + 2.0 {
+                        Color::Indexed(34)
+                    } else if value < db + 4.0 {
+                        Color::Indexed(40)
+                    } else {
+                        Color::Indexed(46)
+                    }
+                } else {
+                    Color::Gray
+                }
+            };
+            let left_color = meter_color(rms.0);
+            let right_color = meter_color(rms.1);
+
+            let channel_width = meter_width / 2;
+            let meter_symbol = "▇".repeat(channel_width.into());
+
+            let spans = Spans::from(vec![
+                Span::styled(&meter_symbol, Style::default().fg(left_color)),
+                Span::raw(" "),
+                Span::styled(&meter_symbol, Style::default().fg(right_color)),
+            ]);
+            buf.set_spans(meter.x, meter.y + i, &spans, meter_width + 1);
+
+            db -= 6;
+        }
+
+        // Volume control
+        let volume_area = Rect {
+            x: area.x,
+            y: meter.y + meter.height,
+            width: area.width,
+            height: 2,
+        };
+
+        let volume = format!("{:.2}", track.volume);
+        let volume = Paragraph::new(volume)
+            .alignment(tui::layout::Alignment::Center)
+            .block(Block::default().borders(Borders::TOP));
+        volume.render(volume_area, buf);
+
+        let button_area = Rect {
+            x: area.x,
+            y: meter.y + meter.height + 2,
+            width: area.width,
+            height: 2,
+        };
+
+        if track.is_master {
+            let block = Block::default().borders(Borders::TOP);
+            block.render(button_area, buf);
+            return;
+        }
+
+        let button_style = if track.muted {
+            Style::default().bg(Color::DarkGray)
+        } else {
+            Style::default().bg(Color::Yellow).fg(Color::Black)
+        };
+
+        let button = Span::styled(format!(" {} ", track.index), button_style);
+        let button = Paragraph::new(button)
+            .alignment(tui::layout::Alignment::Center)
+            .block(Block::default().borders(Borders::TOP));
+        button.render(button_area, buf);
+    }
+
+    fn render_track_steps(
         &self,
         area: Rect,
         buf: &mut Buffer,
@@ -54,23 +144,27 @@ impl<'a> Editor<'a> {
         index: usize,
         steps: &Range<usize>,
     ) {
-        let width = COLUMN_WIDTH;
-
         // Draw track header
-        let header = format!(" {} ", index);
-        let padding = str::repeat(" ", width - header.len());
-        let header = format!("{}{}", header, padding);
+        let header = if track.is_master {
+            String::from(" Master")
+        } else {
+            format!(" {}", index)
+        };
         let bg_color = Color::Indexed(250);
-        buf.set_string(
-            area.left(),
-            area.top(),
-            &header,
-            Style::default().bg(bg_color).fg(Color::Black),
-        );
+        let header = Paragraph::new(header)
+            .alignment(Alignment::Left)
+            .style(Style::default().bg(bg_color).fg(Color::Black));
+
+        let header_area = Rect { height: 1, ..area };
+        header.render(header_area, buf);
+
+        if track.is_master {
+            return;
+        }
 
         // Draw notes
         let mut y = area.top() + 1;
-        for (line, note) in track.steps[steps.start..steps.end].iter().enumerate() {
+        for (line, note) in track.steps(steps).iter().enumerate() {
             let line = line + steps.start;
             let base_style = self.get_base_style(line, false);
             let column = index * 2;
@@ -124,8 +218,16 @@ impl<'a> StatefulWidget for &Editor<'a> {
     type State = EditorState;
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
+        let sections = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Percentage(75), Constraint::Percentage(25)].as_ref())
+            .split(area);
+
+        let pattern_area = sections[0];
+        let mixer_area = sections[1];
+
         let header_height = 1;
-        let height = area.height as usize - header_height - 1;
+        let height = pattern_area.height as usize - header_height - 1;
         let pattern = self.ctx.selected_pattern();
         let mut last_line = state.offset + std::cmp::min(height, pattern.length);
 
@@ -144,7 +246,6 @@ impl<'a> StatefulWidget for &Editor<'a> {
         }
 
         let left = area.left() + 1;
-
         let steps = state.offset..last_line;
 
         // Draw the step indicator next to the pattern grid
@@ -167,28 +268,52 @@ impl<'a> StatefulWidget for &Editor<'a> {
         }
 
         let mut x = area.x + STEP_COLUMN_WIDTH as u16;
-        for (i, track) in pattern.iter_tracks().enumerate() {
+        let mut render_track = |track: &TrackView, idx: usize| {
             let mut borders = Borders::RIGHT | Borders::BOTTOM;
-            let mut width = COLUMN_WIDTH + 1;
-            if i == 0 {
-                // first track column also has a left border
+            let mut width = COLUMN_WIDTH + 1; // add one for border
+            if idx == 0 {
+                // leftmost border is part of first track width
                 width += 1;
                 borders |= Borders::LEFT;
             }
 
+            // Draw pattern
             let area = Rect {
                 x,
                 y: area.y,
                 width: width as u16,
                 height: (last_line - state.offset + 2) as u16,
             };
-            x += width as u16;
-
             let block = Block::default().borders(borders);
             let inner = block.inner(area);
             block.render(area, buf);
-            self.render_track(inner, buf, &track, i, &steps);
+            self.render_track_steps(inner, buf, &track, idx, &steps);
+
+            // Draw mixer channel
+            let area = Rect {
+                x,
+                y: mixer_area.y,
+                width: width as u16,
+                height: mixer_area.height,
+            };
+            borders |= Borders::TOP;
+            let block = Block::default().borders(borders);
+            let inner = block.inner(area);
+            block.render(area, buf);
+            self.render_mixer_controls(&track, inner, buf);
+
+            x += width as u16;
+        };
+
+        for (i, track) in self.ctx.iter_tracks().enumerate() {
+            render_track(&track, i);
         }
+
+        // let track = self.ctx.master_track();
+        // // NOTE: render_track expects a track index to determine e.g whether
+        // // a step is highlighted, but that's never the case for the master track
+        // // so just pass usize::MAX for now
+        // render_track(&track, usize::MAX);
     }
 }
 

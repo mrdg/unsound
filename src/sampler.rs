@@ -1,10 +1,10 @@
-use crate::engine::Device;
+use crate::audio::{Frame, Stereo};
+use crate::engine::{ChannelContext, Device};
 use crate::env::{Envelope, State as EnvelopeState};
 use crate::SAMPLE_RATE;
 use anyhow::Result;
 use camino::Utf8PathBuf;
 use hound::WavReader;
-use std::ops::{Add, Mul};
 use std::sync::Arc;
 
 pub const ROOT_PITCH: u8 = 48;
@@ -45,14 +45,47 @@ impl<'a> Voice {
 
 pub struct Sound {
     pub path: Utf8PathBuf,
-    buf: Vec<Frame>,
+    buf: Vec<Stereo>,
     sample_rate: u32,
     offset: usize,
 }
 
+pub fn load_sound(path: Utf8PathBuf) -> Result<Sound> {
+    let mut wav = WavReader::open(path.clone())?;
+    let wav_spec = wav.spec();
+    let bit_depth = wav_spec.bits_per_sample as f32;
+    let samples: Vec<Stereo> = wav
+        .samples::<i32>()
+        .map(|sample| sample.unwrap() as f32 / (f32::powf(2., bit_depth - 1.)))
+        .collect::<Vec<f32>>()
+        .chunks(wav_spec.channels as usize)
+        .map(|f| {
+            let left = *f.get(0).unwrap();
+            let right = *f.get(1).unwrap_or(&left);
+            Frame::new([left, right])
+        })
+        .collect();
+
+    const SILENCE: f32 = 0.01;
+    let mut offset = 0;
+    for (i, frame) in samples.iter().enumerate() {
+        if frame.channel(0) < SILENCE && frame.channel(1) < SILENCE {
+            continue;
+        } else {
+            offset = i;
+            break;
+        }
+    }
+    Ok(Sound {
+        path,
+        sample_rate: wav_spec.sample_rate,
+        buf: samples,
+        offset,
+    })
+}
+
 pub struct Sampler {
     voices: Vec<Voice>,
-    amp: f32,
     attack: f32,
     decay: f32,
     sustain: f32,
@@ -67,47 +100,12 @@ impl Sampler {
             voices.push(Voice::new());
         }
         Self {
-            amp: -6.0,
             attack: 0.005,
             decay: 0.25,
             sustain: 1.0,
             release: 0.3,
             voices,
         }
-    }
-
-    pub fn load_sound(path: Utf8PathBuf) -> Result<Sound> {
-        let mut wav = WavReader::open(path.clone())?;
-        let wav_spec = wav.spec();
-        let bit_depth = wav_spec.bits_per_sample as f32;
-        let samples: Vec<Frame> = wav
-            .samples::<i32>()
-            .map(|sample| sample.unwrap() as f32 / (f32::powf(2., bit_depth - 1.)))
-            .collect::<Vec<f32>>()
-            .chunks(wav_spec.channels as usize)
-            .map(|f| {
-                let left = *f.get(0).unwrap();
-                let right = *f.get(1).unwrap_or(&left);
-                Frame { left, right }
-            })
-            .collect();
-
-        const SILENCE: f32 = 0.01;
-        let mut offset = 0;
-        for (i, frame) in samples.iter().enumerate() {
-            if frame.left < SILENCE && frame.right < SILENCE {
-                continue;
-            } else {
-                offset = i;
-                break;
-            }
-        }
-        Ok(Sound {
-            path,
-            sample_rate: wav_spec.sample_rate,
-            buf: samples,
-            offset,
-        })
     }
 
     pub fn note_on(&mut self, sound: Arc<Sound>, column: usize, pitch: u8, velocity: u8) {
@@ -160,9 +158,7 @@ fn gain_factor(db: f32) -> f32 {
 }
 
 impl Device for Sampler {
-    fn render(&mut self, buffer: &mut [(f32, f32)]) {
-        let amp = gain_factor(self.amp);
-
+    fn render(&mut self, _ctx: ChannelContext, buffer: &mut [Stereo]) {
         for voice in &mut self.voices {
             if voice.env.state == EnvelopeState::Init {
                 voice.state = VoiceState::Free;
@@ -177,13 +173,12 @@ impl Device for Sampler {
                 let weight = voice.position - pos as f32;
                 let inverse_weight = 1.0 - weight;
 
-                let frame = &sound.buf[pos];
-                let next_frame = &sound.buf[pos + 1];
+                let frame = sound.buf[pos];
+                let next_frame = sound.buf[pos + 1];
                 let new_frame = frame * inverse_weight + next_frame * weight;
 
                 let env = voice.env.value() as f32;
-                dst_frame.0 += voice.volume * amp * env * new_frame.left;
-                dst_frame.1 += voice.volume * amp * env * new_frame.right;
+                *dst_frame += new_frame * voice.volume * env;
                 voice.position += voice.pitch_ratio;
                 if voice.position >= (sound.buf.len() - 1) as f32 {
                     voice.state = VoiceState::Free;
@@ -191,33 +186,6 @@ impl Device for Sampler {
                     break;
                 }
             }
-        }
-    }
-}
-
-struct Frame {
-    left: f32,
-    right: f32,
-}
-
-impl Mul<f32> for &Frame {
-    type Output = Frame;
-
-    fn mul(self, f: f32) -> Frame {
-        Frame {
-            left: self.left * f,
-            right: self.right * f,
-        }
-    }
-}
-
-impl Add for Frame {
-    type Output = Frame;
-
-    fn add(self, other: Frame) -> Frame {
-        Frame {
-            left: self.left + other.left,
-            right: self.right + other.right,
         }
     }
 }

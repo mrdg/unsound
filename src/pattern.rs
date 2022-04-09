@@ -1,14 +1,11 @@
+use crate::engine::INSTRUMENT_TRACKS;
 use crate::sampler::ROOT_PITCH;
 
 pub const INPUTS_PER_STEP: usize = 2;
-pub const MAX_TRACKS: usize = 16;
-
-const MAX_PATTERN_LENGTH: usize = 512;
 pub const MAX_PITCH: u8 = 109;
-
 pub const MAX_PATTERNS: usize = 256;
 
-pub const DEFAULT_PATTERN_COUNT: usize = 8;
+const MAX_PATTERN_LENGTH: usize = 512;
 
 pub enum InputType {
     Pitch,
@@ -40,28 +37,21 @@ impl Position {
     }
 }
 
-pub struct TrackView<'a> {
-    pub steps: &'a [Step],
-}
-
 #[derive(Clone, Debug)]
 pub struct Pattern {
     pub length: usize,
-    tracks: Vec<Track>,
+    pub tracks: Vec<Track>,
 }
 
 impl Pattern {
     pub fn new() -> Self {
-        let mut tracks = Vec::with_capacity(MAX_TRACKS);
-        for _ in 0..MAX_TRACKS {
+        let mut tracks = Vec::with_capacity(INSTRUMENT_TRACKS);
+        for _ in 0..tracks.capacity() {
             tracks.push(Track {
                 steps: vec![Step::default(); MAX_PATTERN_LENGTH],
             })
         }
-        Self {
-            length: 32,
-            tracks,
-        }
+        Self { length: 16, tracks }
     }
 
     pub fn size(&self) -> (usize, usize) {
@@ -104,12 +94,6 @@ impl Pattern {
         if let Some(new) = input.checked_sub(sub) {
             *input = new
         }
-    }
-
-    pub fn iter_tracks(&self) -> impl Iterator<Item = TrackView> {
-        self.tracks.iter().map(move |track| TrackView {
-            steps: &track.steps[0..self.length],
-        })
     }
 
     pub fn iter_notes(&self, tick: u64) -> impl Iterator<Item = NoteEvent> + '_ {
@@ -162,8 +146,8 @@ fn input_attrs(offset: usize) -> InputAttrs {
 }
 
 #[derive(Clone, Debug)]
-struct Track {
-    steps: Vec<Step>,
+pub struct Track {
+    pub steps: Vec<Step>,
 }
 
 #[derive(Copy, Clone, Debug, Default)]
