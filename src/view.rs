@@ -123,7 +123,9 @@ impl View {
 
         // Editor
         let title = format!(" Pattern {} ", ctx.selected_pattern_index());
-        let block = Block::default().borders(Borders::all()).title(title);
+        let block = Block::default()
+            .borders(Borders::TOP | Borders::BOTTOM)
+            .title(title);
         let area = block.inner(sections[1]);
         f.render_widget(block, sections[1]);
 

@@ -31,7 +31,7 @@ pub trait Device {
 pub struct Volume {}
 
 impl Device for Volume {
-    fn render(&mut self, ctx: TrackContext<'_>, buffer: &mut [Stereo]) {
+    fn render(&mut self, ctx: TrackContext, buffer: &mut [Stereo]) {
         for frame in buffer.iter_mut() {
             *frame = *frame * ctx.volume;
         }

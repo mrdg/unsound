@@ -1,107 +1,105 @@
+use std::time::Duration;
+
+use crate::SAMPLE_RATE;
+
 #[derive(Debug, PartialEq)]
 pub enum State {
-    Init,
+    Idle,
     Attack,
     Decay,
     Sustain,
     Release,
 }
 
+// Amount by which we overshoot the target amplitude in the envelope
+const EPS: f32 = 0.001;
+
+// Envelope based on https://mu.krj.st/adsr/
 #[derive(Debug)]
 pub struct Envelope {
-    pub attack: f32,
-    pub decay: f32,
-    pub sustain: f32,
-    pub release: f32,
-
-    attack_rate: f32,
-    pub decay_rate: f32,
-    release_rate: f32,
-
-    samples_after_release: i32,
-
-    val: f32,
     pub state: State,
+
+    prev_gate: f32,
+    out: f32,
+    pole: f32,
+    target: f32,
+    sustain_val: f32,
+
+    pub attack: Duration,
+    pub decay: Duration,
+    pub sustain: f32,
+    pub release: Duration,
 }
 
 impl Envelope {
-    pub fn new() -> Envelope {
+    pub fn new(attack: Duration, decay: Duration, sustain: f32, release: Duration) -> Envelope {
         Envelope {
-            attack: 0.01,
-            decay: 0.1,
-            sustain: 0.8,
-            release: 0.01,
-
-            attack_rate: 0.,
-            decay_rate: 0.,
-            release_rate: 0.,
-            val: 0.,
-            state: State::Init,
-            samples_after_release: 0,
+            state: State::Idle,
+            attack,
+            decay,
+            sustain,
+            release,
+            out: 0.0,
+            prev_gate: 0.0,
+            pole: 0.0,
+            sustain_val: 0.0,
+            target: 0.0,
         }
     }
 
-    pub fn value(&mut self) -> f32 {
+    pub fn value(&mut self, gate: f32) -> f32 {
+        let sustain = self.sustain_value();
+
+        if gate > self.prev_gate {
+            self.state = State::Attack;
+            self.target = 1.0 + EPS;
+            self.pole = ratio_to_pole(self.attack, EPS / self.target);
+        } else if gate < self.prev_gate {
+            self.state = State::Release;
+            self.target = -EPS;
+            self.pole = ratio_to_pole(self.release, EPS / sustain + EPS);
+        }
+
+        self.prev_gate = gate;
+        self.out = (1.0 - self.pole) * self.target + self.pole * self.out;
+
+        use State::*;
         match self.state {
-            State::Init => {
-                return 0.0;
-            }
-            State::Attack => {
-                self.val += self.attack_rate;
-                if self.val >= 1.0 {
-                    self.val = 1.0;
-                    self.state = if self.decay_rate > 0.0 {
-                        State::Decay
-                    } else {
-                        State::Sustain
-                    }
+            Idle => return 0.0,
+            Attack => {
+                if self.out >= 1.0 {
+                    self.out = 1.0;
+                    self.state = Decay;
+                    self.target = sustain - EPS;
+                    self.pole = ratio_to_pole(self.decay, EPS / (1.0 - sustain + EPS));
                 }
             }
-            State::Decay => {
-                self.val -= self.decay_rate;
-                if self.val <= self.sustain {
-                    self.val = self.sustain;
-                    self.state = State::Sustain
+            Decay => {
+                if self.out <= sustain {
+                    self.out = sustain;
+                    self.state = Sustain;
                 }
             }
-            State::Sustain => {
-                if self.sustain == 0.0 {
-                    self.state = State::Init;
-                } else {
-                    self.val = self.sustain;
+            Sustain => {
+                self.out = sustain;
+            }
+            Release => {
+                if self.out <= 0.0 {
+                    self.out = 0.0;
+                    self.state = Idle;
                 }
             }
-            State::Release => {
-                self.samples_after_release -= 1;
-                if self.samples_after_release <= 0 {
-                    self.val = 0.0;
-                } else {
-                    self.val -= self.release_rate;
-                }
-                if self.val <= 0.0 {
-                    self.val = 0.0;
-                    self.state = State::Init;
-                }
-            }
-        }
-        self.val
+        };
+
+        self.out
     }
 
-    pub fn start_attack(&mut self) {
-        let sample_rate = super::SAMPLE_RATE as f32;
-        self.val = 0.0;
-        self.state = State::Attack;
-        self.attack_rate = 1.0 / (self.attack * sample_rate);
-        self.decay_rate = if self.sustain > 0.0 {
-            1.0 - self.sustain / (self.decay * sample_rate)
-        } else {
-            1.0 / (self.decay * sample_rate)
-        }
+    fn sustain_value(&mut self) -> f32 {
+        self.sustain_val = 0.001 * self.sustain + 0.999 * self.sustain_val;
+        self.sustain_val
     }
+}
 
-    pub fn start_release(&mut self) {
-        self.state = State::Release;
-        self.samples_after_release = (self.release * super::SAMPLE_RATE as f32) as i32;
-        self.release_rate = self.val / self.samples_after_release as f32;
-    }
+fn ratio_to_pole(t: Duration, ratio: f32) -> f32 {
+    f32::powf(ratio, 1.0 / (t.as_secs_f32() * SAMPLE_RATE as f32))
 }

@@ -7,8 +7,10 @@ use anyhow::Result;
 use camino::Utf8PathBuf;
 use hound::WavReader;
 use std::sync::Arc;
+use std::time::Duration;
 
 pub const ROOT_PITCH: u8 = 48;
+const DEFAULT_RELEASE: Duration = Duration::from_millis(100);
 
 struct Voice {
     position: f32,
@@ -21,6 +23,7 @@ struct Voice {
     // TODO: it's possible that a voice ends up holding the last reference to a sound, which will
     // cause a deallocation on the audio thread.
     sound: Option<Arc<Sound>>,
+    gate: f32,
 }
 
 #[derive(PartialEq, Debug)]
@@ -38,8 +41,14 @@ impl<'a> Voice {
             volume: 0.0,
             pitch_ratio: 0.,
             state: VoiceState::Free,
-            env: Envelope::new(),
+            env: Envelope::new(
+                Duration::from_millis(50),
+                Duration::from_millis(100),
+                0.5,
+                DEFAULT_RELEASE,
+            ),
             sound: None,
+            gate: 0.0,
         }
     }
 }
@@ -87,38 +96,24 @@ pub fn load_sound(path: Utf8PathBuf) -> Result<Sound> {
 
 pub struct Sampler {
     voices: Vec<Voice>,
-    attack: f32,
-    decay: f32,
-    sustain: f32,
-    release: f32,
 }
 
 impl Sampler {
     pub fn new() -> Self {
-        let num_voices = 8;
-        let mut voices = Vec::with_capacity(num_voices);
-        for _ in 0..num_voices {
+        let mut voices = Vec::with_capacity(8);
+        for _ in 0..voices.capacity() {
             voices.push(Voice::new());
         }
-        Self {
-            attack: 0.005,
-            decay: 0.25,
-            sustain: 1.0,
-            release: 0.3,
-            voices,
-        }
+        Self { voices }
     }
 
     pub fn note_on(&mut self, sound: Arc<Sound>, column: usize, pitch: u8, velocity: u8) {
         self.stop_note(column);
 
         if let Some(voice) = self.voices.iter_mut().find(|v| v.state == VoiceState::Free) {
-            voice.env.attack = self.attack;
-            voice.env.decay = self.decay;
-            voice.env.sustain = self.sustain;
-            voice.env.release = self.release;
-            voice.env.start_attack();
+            voice.gate = 1.0;
             voice.state = VoiceState::Busy;
+            voice.env.release = DEFAULT_RELEASE;
             voice.pitch = pitch;
             voice.volume = gain_factor(map(velocity as f32, (0.0, 127.0), (-60.0, 0.0)));
             voice.column = column;
@@ -138,7 +133,7 @@ impl Sampler {
             .iter_mut()
             .find(|v| v.state == VoiceState::Busy && v.column == column && v.pitch == pitch)
         {
-            voice.env.start_release();
+            voice.gate = 0.0;
         }
     }
 
@@ -148,8 +143,8 @@ impl Sampler {
             .iter_mut()
             .find(|v| v.state == VoiceState::Busy && v.column == column)
         {
-            voice.env.release = 0.005; // set a short release (5ms)
-            voice.env.start_release();
+            voice.gate = 0.0;
+            voice.env.release = Duration::from_millis(5); // set a short release (5ms)
         }
     }
 }
@@ -161,11 +156,7 @@ fn gain_factor(db: f32) -> f32 {
 impl Device for Sampler {
     fn render(&mut self, _ctx: TrackContext, buffer: &mut [Stereo]) {
         for voice in &mut self.voices {
-            if voice.env.state == EnvelopeState::Init {
-                voice.state = VoiceState::Free;
-                voice.sound = None;
-            }
-            if voice.state != VoiceState::Busy {
+            if voice.state == VoiceState::Free {
                 continue;
             }
             let sound = &voice.sound.as_ref().unwrap();
@@ -178,7 +169,7 @@ impl Device for Sampler {
                 let next_frame = sound.buf[pos + 1];
                 let new_frame = frame * inverse_weight + next_frame * weight;
 
-                let env = voice.env.value() as f32;
+                let env = voice.env.value(voice.gate) as f32;
                 *dst_frame += new_frame * voice.volume * env;
                 voice.position += voice.pitch_ratio;
                 if voice.position >= (sound.buf.len() - 1) as f32 {
@@ -186,6 +177,10 @@ impl Device for Sampler {
                     voice.sound = None;
                     break;
                 }
+            }
+            if voice.env.state == EnvelopeState::Idle {
+                voice.state = VoiceState::Free;
+                voice.sound = None;
             }
         }
     }
