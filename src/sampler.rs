@@ -1,7 +1,7 @@
 use crate::audio::{Frame, Stereo};
 use crate::engine::{Device, TrackContext};
 use crate::env::{Envelope, State as EnvelopeState};
-use crate::pattern::NoteEvent;
+use crate::pattern::{NoteEvent, NOTE_OFF};
 use crate::SAMPLE_RATE;
 use anyhow::Result;
 use camino::Utf8PathBuf;
@@ -127,11 +127,11 @@ impl Sampler {
         }
     }
 
-    fn note_off(&mut self, column: usize, pitch: u8) {
+    fn note_off(&mut self, column: usize) {
         if let Some(voice) = self
             .voices
             .iter_mut()
-            .find(|v| v.state == VoiceState::Busy && v.column == column && v.pitch == pitch)
+            .find(|v| v.state == VoiceState::Busy && v.column == column)
         {
             voice.gate = 0.0;
         }
@@ -187,7 +187,11 @@ impl Device for Sampler {
 
     fn send_event(&mut self, ctx: TrackContext, event: &NoteEvent) {
         if let Some(snd) = ctx.sound(event.sound.into()) {
-            self.note_on(snd.to_owned(), event.track as usize, event.pitch, 100);
+            if event.pitch == NOTE_OFF {
+                self.note_off(event.track as usize);
+            } else {
+                self.note_on(snd.to_owned(), event.track as usize, event.pitch, 100);
+            }
         }
     }
 }

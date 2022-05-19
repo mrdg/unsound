@@ -107,6 +107,9 @@ impl App {
                 let pitch = oct * 12 + pitch;
                 self.update_pattern(|p| p.set_pitch(pos, pitch));
             }
+            SetNoteOff(pos) => {
+                self.update_pattern(|p| p.set_note_off(pos));
+            }
             SetSound(pos, idx) => self.update_pattern(|p| p.set_sound(pos, idx)),
             DeleteNoteValue(pos) => self.update_pattern(|p| p.delete(pos)),
             PatternInc(pos, step_size) => self.update_pattern(|p| p.inc(pos, step_size)),
@@ -389,6 +392,7 @@ pub enum Msg {
     Exit,
     TogglePlay,
     SetPitch(Position, u8),
+    SetNoteOff(Position),
     PatternInc(Position, StepSize),
     PatternDec(Position, StepSize),
     SetSound(Position, i32),

@@ -3,6 +3,7 @@ use crate::sampler::ROOT_PITCH;
 
 pub const INPUTS_PER_STEP: usize = 2;
 pub const MAX_PITCH: u8 = 109;
+pub const NOTE_OFF: u8 = MAX_PITCH;
 pub const MAX_PATTERNS: usize = 256;
 
 const MAX_PATTERN_LENGTH: usize = 512;
@@ -63,6 +64,11 @@ impl Pattern {
             let v = self.input(pos);
             *v = Some(pitch);
         }
+    }
+
+    pub fn set_note_off(&mut self, pos: Position) {
+        let v = self.input(pos);
+        *v = Some(NOTE_OFF);
     }
 
     pub fn set_sound(&mut self, pos: Position, num: i32) {

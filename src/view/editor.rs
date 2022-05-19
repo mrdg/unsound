@@ -320,11 +320,14 @@ lazy_static! {
             "C-", "C#", "D-", "D#", "E-", "F-", "F#", "G-", "G#", "A-", "A#", "B-",
         ];
         // 0 based octave notation instead of -2 based makes notes easier to read in the editor.
-        (0..MAX_PITCH as usize)
+        let mut notes: Vec<String> = (0..MAX_PITCH as usize)
             .map(|pitch| {
                 let octave = pitch / 12;
                 format!("{}{}", names[pitch % 12], octave)
             })
-            .collect()
+            .collect();
+
+        notes.push("OFF".to_string());
+        notes
     };
 }

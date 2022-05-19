@@ -7,6 +7,7 @@ pub use crate::input::{Input, InputQueue};
 use crate::pattern::InputType;
 use crate::pattern::Position;
 use crate::pattern::StepSize;
+use crate::pattern::NOTE_OFF;
 pub use crate::view::editor::{Editor, EditorState};
 use anyhow::{anyhow, Result};
 use camino::Utf8PathBuf;
@@ -374,6 +375,7 @@ impl View {
                 Key::Char(']') => return Ok(PatternDec(self.cursor, StepSize::Default)),
                 Key::Char('{') => return Ok(PatternInc(self.cursor, StepSize::Large)),
                 Key::Char('}') => return Ok(PatternDec(self.cursor, StepSize::Large)),
+                Key::Char('a') => return Ok(SetNoteOff(self.cursor)),
                 Key::Char(key) => match self.cursor.input_type() {
                     InputType::Pitch => {
                         if let Some(change) = set_pitch(self.cursor, key) {
