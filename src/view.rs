@@ -7,7 +7,6 @@ pub use crate::input::{Input, InputQueue};
 use crate::pattern::InputType;
 use crate::pattern::Position;
 use crate::pattern::StepSize;
-use crate::pattern::NOTE_OFF;
 pub use crate::view::editor::{Editor, EditorState};
 use anyhow::{anyhow, Result};
 use camino::Utf8PathBuf;
