@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::vec;
 
 use ringbuf::Consumer;
@@ -8,7 +7,7 @@ use triple_buffer::Input;
 use crate::app::{AppState, AudioContext, DeviceID, EngineState, SharedState, TrackID};
 use crate::audio::{Buffer, Rms, Stereo};
 use crate::pattern::NoteEvent;
-use crate::sampler::{Sampler, Sound, ROOT_PITCH};
+use crate::sampler::{Adsr, Sampler, Sound, ROOT_PITCH};
 use crate::{INTERNAL_BUFFER_SIZE, SAMPLE_RATE};
 
 pub const INSTRUMENT_TRACKS: usize = 16;
@@ -18,7 +17,7 @@ const MAX_TRACK_EFFECTS: usize = 5;
 const RMS_WINDOW_SIZE: usize = SAMPLE_RATE as usize / 10 * 3;
 
 pub enum EngineCommand {
-    PreviewSound(Arc<Sound>),
+    PreviewSound(Sound),
     CreateTrack(TrackID, Box<Track>),
     CreateDevice(TrackID, DeviceID, Box<dyn Device + Send>),
 }
@@ -41,13 +40,15 @@ impl Device for Volume {
 #[derive(Copy, Clone)]
 pub struct TrackContext<'a> {
     volume: f32,
-    sounds: &'a Vec<Option<Arc<Sound>>>,
+    pub adsr: Option<&'a Adsr>,
+    sounds: &'a Vec<Option<Sound>>,
 }
 
 impl<'a> TrackContext<'a> {
     fn new(track: usize, ctx: &'a AudioContext) -> Self {
         Self {
             volume: ctx.track_volume(track) as f32,
+            adsr: Some(ctx.adsr(track)),
             sounds: ctx.sounds(),
         }
     }
@@ -55,11 +56,12 @@ impl<'a> TrackContext<'a> {
     fn for_preview(ctx: &'a AudioContext) -> Self {
         Self {
             volume: 0.6,
+            adsr: None,
             sounds: ctx.sounds(),
         }
     }
 
-    pub fn sound(&self, idx: usize) -> &Option<Arc<Sound>> {
+    pub fn sound(&self, idx: usize) -> &Option<Sound> {
         &self.sounds[idx]
     }
 }
@@ -110,8 +112,8 @@ impl Engine {
     }
 
     pub fn render(&mut self, state: &AppState, buffer: &mut [Stereo]) {
-        self.run_commands();
         let ctx = AudioContext::new(state);
+        self.run_commands(ctx);
 
         let mut buffer = buffer;
         while let Some(block_size) = self.next_block(ctx, buffer.len()) {
@@ -120,8 +122,8 @@ impl Engine {
 
                 let ctx = TrackContext::new(i, &ctx);
                 for device_id in &track_info.devices {
-                    let effect = track.devices.get_mut(device_id).unwrap();
-                    effect.render(ctx, &mut self.track_buf[..block_size]);
+                    let device = track.devices.get_mut(device_id).unwrap();
+                    device.render(ctx, &mut self.track_buf[..block_size]);
                 }
 
                 track.rms.add_frames(&self.track_buf[..block_size]);
@@ -141,7 +143,7 @@ impl Engine {
             }
 
             let ctx = TrackContext::for_preview(&ctx);
-            self.preview.render(ctx, buffer);
+            self.preview.render(ctx, &mut buffer[..block_size]);
             buffer = &mut buffer[block_size..];
         }
 
@@ -202,11 +204,12 @@ impl Engine {
         }
     }
 
-    fn run_commands(&mut self) {
+    fn run_commands(&mut self, ctx: AudioContext) {
         while let Some(cmd) = self.consumer.pop() {
             match cmd {
                 EngineCommand::PreviewSound(snd) => {
-                    self.preview.note_on(snd, 0, ROOT_PITCH, 80);
+                    let ctx = TrackContext::for_preview(&ctx);
+                    self.preview.note_on(&snd, ctx, 0, ROOT_PITCH, 80);
                 }
                 EngineCommand::CreateTrack(track_id, track) => {
                     self.tracks.insert(track_id, track);

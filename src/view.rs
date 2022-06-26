@@ -299,7 +299,7 @@ impl View {
             return Ok(Noop);
         }
 
-        if key == Key::Char(':') {
+        if key == Key::Char(':') && self.focus != Focus::CommandLine {
             self.focus = Focus::CommandLine;
             return Ok(Noop);
         }
@@ -331,6 +331,18 @@ impl View {
                                 let value: f64 = parts[1].parse()?;
                                 SetVolume(None, value)
                             };
+                            Ok(cmd)
+                        }
+                        "adsr" => {
+                            let parse = |idx: usize| -> Option<f32> {
+                                let args = &parts[1..];
+                                if idx >= args.len() {
+                                    return None;
+                                }
+                                args[idx].trim().parse().ok()
+                            };
+                            let track = self.cursor.track();
+                            let cmd = SetAdsr(track, parse(0), parse(1), parse(2), parse(3));
                             Ok(cmd)
                         }
                         _ => Err(anyhow!("invalid command {}", parts[0])),

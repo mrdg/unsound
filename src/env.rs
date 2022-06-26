@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use crate::SAMPLE_RATE;
+use crate::{sampler::Adsr, SAMPLE_RATE};
 
 #[derive(Debug, PartialEq)]
 pub enum State {
@@ -47,6 +47,13 @@ impl Envelope {
         }
     }
 
+    pub fn update(&mut self, adsr: &Adsr) {
+        self.attack = adsr.attack;
+        self.decay = adsr.decay;
+        self.sustain = adsr.sustain;
+        self.release = adsr.release;
+    }
+
     pub fn value(&mut self, gate: f32) -> f32 {
         let sustain = self.sustain_value();
 
@@ -57,7 +64,7 @@ impl Envelope {
         } else if gate < self.prev_gate {
             self.state = State::Release;
             self.target = -EPS;
-            self.pole = ratio_to_pole(self.release, EPS / sustain + EPS);
+            self.pole = ratio_to_pole(self.release, EPS / (sustain + EPS));
         }
 
         self.prev_gate = gate;

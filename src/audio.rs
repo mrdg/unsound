@@ -192,4 +192,3 @@ mod tests {
         assert_eq!(frame![0.38729838, 0.38729838], rms.value());
     }
 }
-

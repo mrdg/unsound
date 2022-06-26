@@ -1,6 +1,5 @@
 use anyhow::{anyhow, Result};
 use camino::Utf8PathBuf;
-use rand::prelude::*;
 use ringbuf::Producer;
 use triple_buffer::{Input, Output};
 
@@ -8,7 +7,7 @@ use crate::audio::Stereo;
 use crate::engine::{self, INSTRUMENT_TRACKS, TOTAL_TRACKS};
 use crate::files::FileBrowser;
 use crate::pattern::{Position, Step, StepSize, MAX_PATTERNS};
-use crate::sampler::{self, Sampler};
+use crate::sampler::{self, Adsr, AudioFile, Sampler};
 use crate::view;
 use crate::view::{InputQueue, View};
 use crate::{engine::EngineCommand, pattern::Pattern, sampler::Sound};
@@ -30,7 +29,7 @@ pub struct App {
     engine_state_buf: Output<EngineState>,
     producer: Producer<EngineCommand>,
     file_browser: FileBrowser,
-    sound_cache: HashMap<Utf8PathBuf, Arc<Sound>>,
+    file_cache: HashMap<Utf8PathBuf, Arc<AudioFile>>,
     id_generator: IdGenerator,
 }
 
@@ -47,7 +46,7 @@ impl App {
             engine_state_buf,
             producer,
             file_browser: FileBrowser::with_path("./sounds")?,
-            sound_cache: HashMap::new(),
+            file_cache: HashMap::new(),
             id_generator: IdGenerator { current: 0 },
         };
         Ok(app)
@@ -229,8 +228,24 @@ impl App {
                     muted: false,
                     track_type,
                     volume: Volume::new(-6.0),
+                    adsr: Adsr::default(),
                 };
                 self.state.tracks.insert(idx, track);
+            }
+            SetAdsr(idx, a, d, s, r) => {
+                let track = &mut self.state.tracks[idx];
+                if let Some(a) = a {
+                    track.adsr.set_attack(a)
+                }
+                if let Some(d) = d {
+                    track.adsr.set_decay(d)
+                }
+                if let Some(s) = s {
+                    track.adsr.set_sustain(s)
+                }
+                if let Some(r) = r {
+                    track.adsr.set_release(r)
+                }
             }
         }
 
@@ -245,27 +260,25 @@ impl App {
         }
     }
 
-    fn load_sound(&mut self, path: Utf8PathBuf) -> Result<Arc<Sound>> {
-        let snd = if let Some(snd) = self.sound_cache.get(&path) {
-            snd.clone()
+    fn load_sound(&mut self, path: Utf8PathBuf) -> Result<Sound> {
+        let file = if let Some(file) = self.file_cache.get(&path) {
+            file.clone()
         } else {
-            if self.sound_cache.len() > 50 {
-                // Delete random entry so the cache doesn't grow forever
-                // TODO: do something smarter like LRU (maybe based on sample length)
-                let key = self
-                    .sound_cache
-                    .keys()
-                    .choose(&mut rand::thread_rng())
-                    .map(|k| k.to_owned());
-                if let Some(key) = key {
-                    self.sound_cache.remove(&key);
-                }
-            }
-            let snd = Arc::new(sampler::load_sound(path.clone())?);
-            self.sound_cache.insert(path.clone(), snd.clone());
-            snd
+            // Sounds with only a single reference are not loaded in an instrument slot (and
+            // so cannot be cloned by the audio thread) so we can safely delete these
+            // from the cache.
+            self.file_cache.retain(|_, v| Arc::strong_count(v) > 1);
+
+            let file = Arc::new(sampler::load_file(&path)?);
+            self.file_cache.insert(path.clone(), file.clone());
+            file
         };
-        Ok(snd)
+
+        Ok(Sound {
+            offset: file.offset,
+            path: path.clone(),
+            file,
+        })
     }
 
     fn next_pattern_id(&self) -> PatternID {
@@ -334,7 +347,7 @@ pub struct AppState {
     patterns: HashMap<PatternID, Arc<Pattern>>,
     song: Vec<PatternID>,
     loop_range: Option<(usize, usize)>,
-    sounds: Vec<Option<Arc<Sound>>>,
+    sounds: Vec<Option<Sound>>,
     tracks: Vec<Track>,
 }
 
@@ -345,6 +358,7 @@ pub struct Track {
     pub track_type: TrackType,
     volume: Volume,
     muted: bool,
+    adsr: Adsr,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -417,6 +431,7 @@ pub enum Msg {
     VolumeDec(Option<usize>),
     SetVolume(Option<usize>, f64),
     CreateTrack(usize, TrackType),
+    SetAdsr(usize, Option<f32>, Option<f32>, Option<f32>, Option<f32>),
 }
 
 impl Msg {
@@ -444,7 +459,7 @@ pub trait SharedState {
         self.app().is_playing
     }
 
-    fn sounds(&self) -> &Vec<Option<Arc<Sound>>> {
+    fn sounds(&self) -> &Vec<Option<Sound>> {
         &self.app().sounds
     }
 
@@ -561,6 +576,10 @@ impl<'a> AudioContext<'a> {
 
     pub fn tracks(&self) -> &Vec<Track> {
         &self.app_state.tracks
+    }
+
+    pub fn adsr(&self, track: usize) -> &'a Adsr {
+        &self.app_state.tracks[track].adsr
     }
 
     pub fn instrument_tracks(&self) -> impl Iterator<Item = &Track> {
