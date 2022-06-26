@@ -276,7 +276,7 @@ impl App {
 
         Ok(Sound {
             offset: file.offset,
-            path: path.clone(),
+            path,
             file,
         })
     }
