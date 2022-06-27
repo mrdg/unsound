@@ -62,7 +62,7 @@ impl<'a> TrackContext<'a> {
     }
 
     pub fn sound(&self, idx: usize) -> &Option<Sound> {
-        &self.sounds[idx]
+        self.sounds.get(idx).unwrap_or(&None)
     }
 }
 
