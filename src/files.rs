@@ -1,7 +1,7 @@
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use camino::{Utf8Path, Utf8PathBuf};
+use std::convert::TryInto;
 use std::fs;
-use std::path::PathBuf;
 
 // TODO: handle empty directories better
 pub struct FileBrowser {
@@ -20,20 +20,16 @@ impl FileBrowser {
     }
 
     pub fn move_to<P: AsRef<Utf8Path>>(&mut self, path: P) -> Result<()> {
-        self.dir = utf8_path(path.as_ref().canonicalize()?)?;
+        self.dir = path.as_ref().canonicalize()?.try_into()?;
         self.entries.clear();
         for entry in fs::read_dir(path.as_ref())? {
             let entry = entry?;
             if entry.path().is_dir() || entry.path().extension().map_or(false, |ext| ext == "wav") {
-                let abs_path = utf8_path(entry.path().canonicalize()?)?;
-                self.entries.push(abs_path);
+                let path = entry.path().canonicalize()?.try_into()?;
+                self.entries.push(path);
             }
         }
         self.entries.sort();
         Ok(())
     }
-}
-
-fn utf8_path(path: PathBuf) -> Result<Utf8PathBuf> {
-    Utf8PathBuf::from_path_buf(path).map_err(|path| anyhow!("invalid path {}", path.display()))
 }

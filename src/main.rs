@@ -9,6 +9,7 @@ mod engine;
 mod env;
 mod files;
 mod input;
+mod params;
 mod pattern;
 mod sampler;
 mod view;

@@ -18,41 +18,44 @@ use tui::{
     layout::{Alignment, Constraint, Direction, Layout},
     style::{Color, Style},
     text::{Span, Spans},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, StatefulWidget, Widget},
+    widgets::{
+        Block, Borders, List as ListView, ListItem, ListState, Paragraph, StatefulWidget, Widget,
+    },
     Frame,
 };
 
 pub struct View {
     frames: usize,
-    cursor: Position,
+    cursor: Cursor,
     focus: Focus,
-    files: ListState,
-    current_dir: Utf8PathBuf,
-    sounds: ListState,
-    patterns: ListState,
+    files: List,
+    sounds: List,
+    params: List,
+    tracks: List,
+    devices: List,
+    patterns: List,
     editor: EditorState,
     command: CommandState,
+    project_tree_state: ProjectTreeState,
 }
 
 impl View {
     pub fn new() -> Self {
-        let mut file_state = ListState::default();
-        file_state.select(Some(0));
-        let mut pattern_state = ListState::default();
-        pattern_state.select(Some(0));
-
         Self {
             frames: 0,
-            cursor: Position::default(),
-            sounds: ListState::default(),
-            patterns: pattern_state,
-            files: file_state,
-            current_dir: Utf8PathBuf::new(),
+            cursor: Cursor::default(),
+            sounds: List::default(),
+            tracks: List::default(),
+            devices: List::default(),
+            params: List::default(),
+            patterns: List::default(),
+            files: List::default(),
             editor: EditorState::default(),
             focus: Focus::Editor,
             command: CommandState {
                 buffer: String::with_capacity(1024),
             },
+            project_tree_state: ProjectTreeState::Sounds,
         }
     }
 }
@@ -130,7 +133,7 @@ impl View {
         f.render_widget(block, sections[1]);
 
         let in_focus = self.focus == Focus::Editor;
-        let editor = Editor::new(self.cursor, in_focus, ctx);
+        let editor = Editor::new(self.cursor.pos, in_focus, ctx);
         f.render_stateful_widget(&editor, area, &mut self.editor);
     }
 
@@ -179,10 +182,10 @@ impl View {
         } else {
             Style::default()
         };
-        let patterns = List::new(patterns)
+        let patterns = ListView::new(patterns)
             .highlight_style(highlight_style)
             .block(Block::default().borders(Borders::RIGHT));
-        f.render_stateful_widget(patterns, sections[0], &mut self.patterns);
+        f.render_stateful_widget(patterns, sections[0], &mut self.patterns.state);
 
         let patterns: Vec<ListItem> = ctx
             .song()
@@ -207,8 +210,113 @@ impl View {
         } else {
             Style::default()
         };
-        let patterns = List::new(patterns).highlight_style(highlight_style);
-        f.render_stateful_widget(patterns, sections[1], &mut self.patterns);
+        let patterns = ListView::new(patterns).highlight_style(highlight_style);
+        f.render_stateful_widget(patterns, sections[1], &mut self.patterns.state);
+    }
+
+    fn render_project_tree<B: Backend>(&mut self, f: &mut Frame<B>, ctx: ViewContext, area: Rect) {
+        let highlight_style = if self.focus == Focus::ProjectTree {
+            Style::default().fg(Color::Black).bg(Color::Green)
+        } else {
+            Style::default()
+        };
+        match self.project_tree_state {
+            ProjectTreeState::Tracks => {
+                let tracks: Vec<ListItem> = ctx
+                    .iter_tracks()
+                    .enumerate()
+                    .map(|(i, track)| {
+                        ListItem::new(Span::raw(format!(
+                            "  {:0width$} {}",
+                            i,
+                            track.name.unwrap_or("-"),
+                            width = 2
+                        )))
+                    })
+                    .collect();
+
+                let tracks = ListView::new(tracks)
+                    .block(Block::default().borders(Borders::ALL).title("Tracks"))
+                    .highlight_style(highlight_style);
+                f.render_stateful_widget(tracks, area, &mut self.tracks.state);
+            }
+            ProjectTreeState::Devices(track_idx) => {
+                let devices: Vec<ListItem> = ctx
+                    .devices(track_idx)
+                    .iter()
+                    .enumerate()
+                    .map(|(i, dev)| {
+                        ListItem::new(Span::raw(format!(" {:0width$} {}", i, dev.name, width = 2)))
+                    })
+                    .collect();
+
+                let track_name = ctx.tracks()[track_idx]
+                    .name
+                    .clone()
+                    .unwrap_or(format!("Track {track_idx}"));
+                let devices = ListView::new(devices)
+                    .block(Block::default().borders(Borders::ALL).title(track_name))
+                    .highlight_style(highlight_style);
+                f.render_stateful_widget(devices, area, &mut self.devices.state);
+            }
+            ProjectTreeState::DeviceParams(track_idx, device_idx) => {
+                // TODO: maybe use a table here to align values?
+                let w = (area.width as f32 * 0.6) as usize;
+                let params: Vec<ListItem> = ctx
+                    .params(track_idx, device_idx)
+                    .iter()
+                    .enumerate()
+                    .map(|(i, p)| {
+                        ListItem::new(Span::raw(format!(
+                            " {:0nwidth$} {:lwidth$} {}",
+                            i,
+                            p.label,
+                            p.value,
+                            nwidth = 2,
+                            lwidth = w
+                        )))
+                    })
+                    .collect();
+                let device_name: &str = ctx.devices(track_idx)[device_idx].name.as_ref();
+                let track_name = ctx.tracks()[track_idx]
+                    .name
+                    .clone()
+                    .unwrap_or(format!("Track {track_idx}"));
+
+                let params = ListView::new(params)
+                    .block(
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .title(format!("{track_name} > {device_name}")),
+                    )
+                    .highlight_style(highlight_style);
+                f.render_stateful_widget(params, area, &mut self.params.state);
+            }
+            ProjectTreeState::Sounds => {
+                // Sounds
+                let sounds: Vec<ListItem> = ctx
+                    .sounds()
+                    .iter()
+                    .enumerate()
+                    .map(|(i, snd)| {
+                        let selected = if i == self.sounds.pos && self.focus != Focus::ProjectTree {
+                            Span::raw(">")
+                        } else {
+                            Span::raw(" ")
+                        };
+                        let snd_desc = snd
+                            .as_ref()
+                            .map_or("", |snd| snd.path.file_name().unwrap_or(""));
+                        let snd_desc = Span::raw(format!(" {:0width$} {}", i, snd_desc, width = 2));
+                        ListItem::new(Spans::from(vec![selected, snd_desc]))
+                    })
+                    .collect();
+                let sounds = ListView::new(sounds)
+                    .block(Block::default().borders(Borders::ALL).title("Sounds"))
+                    .highlight_style(highlight_style);
+                f.render_stateful_widget(sounds, area, &mut self.sounds.state);
+            }
+        };
     }
 
     fn render_sidebar<B: Backend>(&mut self, f: &mut Frame<B>, ctx: ViewContext, area: Rect) {
@@ -217,27 +325,7 @@ impl View {
             .constraints([Constraint::Ratio(1, 3), Constraint::Ratio(2, 3)].as_ref())
             .split(area);
 
-        // Sounds
-        let sounds: Vec<ListItem> = ctx
-            .sounds()
-            .iter()
-            .enumerate()
-            .map(|(i, snd)| {
-                ListItem::new(Span::raw(format!(
-                    " {:0width$} {}",
-                    i,
-                    snd.as_ref()
-                        .map_or("", |snd| snd.path.file_name().unwrap_or("")),
-                    width = 2
-                )))
-            })
-            .collect();
-
-        let sounds = List::new(sounds)
-            .block(Block::default().title("Sounds").borders(Borders::all()))
-            .highlight_style(Style::default().fg(Color::Black).bg(Color::Green));
-
-        f.render_stateful_widget(sounds, sections[0], &mut self.sounds);
+        self.render_project_tree(f, ctx, sections[0]);
 
         // File Browser
         let file_block = Block::default().borders(Borders::all()).title("Files");
@@ -254,7 +342,7 @@ impl View {
 
         f.render_widget(file_block, sections[1]);
 
-        let highlight_style = if self.focus == Focus::FileBrowser {
+        let highlight_style = if self.focus == Focus::FileLoader {
             Style::default().fg(Color::Black).bg(Color::Green)
         } else {
             Style::default()
@@ -265,8 +353,8 @@ impl View {
             .iter()
             .map(|path| ListItem::new(Span::raw(format!(" {}", path.file_name().unwrap_or("")))))
             .collect();
-        let files = List::new(files).highlight_style(highlight_style);
-        f.render_stateful_widget(files, file_sections[0], &mut self.files);
+        let files = ListView::new(files).highlight_style(highlight_style);
+        f.render_stateful_widget(files, file_sections[0], &mut self.files.state);
 
         let dir = shorten_path(&ctx.file_browser.dir, file_sections[1].width as usize - 8);
         let header =
@@ -291,8 +379,9 @@ impl View {
             use Focus::*;
             self.focus = match self.focus {
                 Patterns => Editor,
-                Editor => FileBrowser,
-                FileBrowser => Patterns,
+                Editor => ProjectTree,
+                ProjectTree => FileLoader,
+                FileLoader => Patterns,
                 CommandLine => CommandLine,
             };
             return Ok(Noop);
@@ -332,18 +421,6 @@ impl View {
                             };
                             Ok(cmd)
                         }
-                        "adsr" => {
-                            let parse = |idx: usize| -> Option<f32> {
-                                let args = &parts[1..];
-                                if idx >= args.len() {
-                                    return None;
-                                }
-                                args[idx].trim().parse().ok()
-                            };
-                            let track = self.cursor.track();
-                            let cmd = SetAdsr(track, parse(0), parse(1), parse(2), parse(3));
-                            Ok(cmd)
-                        }
                         _ => Err(anyhow!("invalid command {}", parts[0])),
                     };
                     self.command.buffer.clear();
@@ -365,108 +442,169 @@ impl View {
 
         match self.focus {
             Focus::Editor => match key {
-                Key::Alt('m') => return Ok(ToggleMute(self.cursor.track())),
+                Key::Alt('m') => return Ok(ToggleMute(self.cursor.pos.track())),
                 Key::Char(' ') => return Ok(TogglePlay),
                 Key::Backspace => {
-                    let change = DeleteNoteValue(self.cursor);
-                    self.move_cursor(ctx, CursorMove::Down);
+                    let change = DeleteNoteValue(self.cursor.pos);
+                    self.cursor.down();
                     return Ok(change);
                 }
-                Key::Ctrl('n') | Key::Down => self.move_cursor(ctx, CursorMove::Down),
-                Key::Ctrl('p') | Key::Up => self.move_cursor(ctx, CursorMove::Up),
-                Key::Ctrl('f') | Key::Right => self.move_cursor(ctx, CursorMove::Right),
-                Key::Ctrl('b') | Key::Left => self.move_cursor(ctx, CursorMove::Left),
-                Key::Ctrl('a') | Key::Home => self.move_cursor(ctx, CursorMove::Start),
-                Key::Ctrl('e') | Key::End => self.move_cursor(ctx, CursorMove::End),
+                Key::Ctrl('n') | Key::Down => self.cursor.down(),
+                Key::Ctrl('p') | Key::Up => self.cursor.up(),
+                Key::Ctrl('f') | Key::Right => self.cursor.right(),
+                Key::Ctrl('b') | Key::Left => self.cursor.left(),
+                Key::Ctrl('a') | Key::Home => self.cursor.start(),
+                Key::Ctrl('e') | Key::End => self.cursor.end(),
                 Key::Ctrl('d') => return Ok(NextPattern),
                 Key::Ctrl('u') => return Ok(PrevPattern),
-                Key::Char('=') => return Ok(VolumeInc(Some(self.cursor.track()))),
-                Key::Char('-') => return Ok(VolumeDec(Some(self.cursor.track()))),
-                Key::Char('[') => return Ok(PatternInc(self.cursor, StepSize::Default)),
-                Key::Char(']') => return Ok(PatternDec(self.cursor, StepSize::Default)),
-                Key::Char('{') => return Ok(PatternInc(self.cursor, StepSize::Large)),
-                Key::Char('}') => return Ok(PatternDec(self.cursor, StepSize::Large)),
-                Key::Char('a') => return Ok(SetNoteOff(self.cursor)),
-                Key::Char(key) => match self.cursor.input_type() {
+                Key::Char('=') => return Ok(VolumeInc(Some(self.cursor.pos.track()))),
+                Key::Char('-') => return Ok(VolumeDec(Some(self.cursor.pos.track()))),
+                Key::Char('[') => return Ok(PatternInc(self.cursor.pos, StepSize::Default)),
+                Key::Char(']') => return Ok(PatternDec(self.cursor.pos, StepSize::Default)),
+                Key::Char('{') => return Ok(PatternInc(self.cursor.pos, StepSize::Large)),
+                Key::Char('}') => return Ok(PatternDec(self.cursor.pos, StepSize::Large)),
+                Key::Char('a') => return Ok(SetNoteOff(self.cursor.pos)),
+                Key::Char(key) => match self.cursor.pos.input_type() {
                     InputType::Pitch => {
-                        if let Some(change) = set_pitch(self.cursor, key) {
-                            self.move_cursor(ctx, CursorMove::Down);
+                        if let Some(change) = set_pitch(self.cursor.pos, key) {
+                            self.cursor.down();
                             return Ok(change);
                         }
                         return Ok(Noop);
                     }
-                    InputType::Sound => return Ok(set_sound(self.cursor, key)),
+                    InputType::Sound => return Ok(set_sound(self.cursor.pos, key)),
                 },
                 _ => {}
             },
             Focus::CommandLine => {}
-            Focus::Patterns => {
-                let num_patterns = ctx.song().len();
+            Focus::Patterns => match key {
+                Key::Backspace => return Ok(DeletePattern(self.patterns.pos)),
+                Key::Ctrl('c') => return Ok(CreatePattern(Some(self.patterns.pos))),
+                Key::Ctrl('r') => return Ok(RepeatPattern(self.patterns.pos)),
+                Key::Ctrl('d') => return Ok(ClonePattern(self.patterns.pos)),
+                Key::Char('l') => return Ok(LoopToggle(self.patterns.pos)),
+                Key::Char('L') => return Ok(LoopAdd(self.patterns.pos)),
+                Key::Char('\n') => return Ok(SelectPattern(self.patterns.pos)),
+                _ => self.patterns.input(key),
+            },
+            Focus::ProjectTree => return self.handle_project_tree_input(key, ctx),
+            Focus::FileLoader => {
                 match key {
-                    Key::Down | Key::Ctrl('n') => self.patterns.move_cursor(1, num_patterns),
-                    Key::Up | Key::Ctrl('p') => self.patterns.move_cursor(-1, num_patterns),
-                    Key::Backspace => return Ok(DeletePattern(self.patterns.cursor())),
-                    Key::Ctrl('c') => return Ok(CreatePattern(Some(self.patterns.cursor()))),
-                    Key::Ctrl('r') => return Ok(RepeatPattern(self.patterns.cursor())),
-                    Key::Ctrl('d') => return Ok(ClonePattern(self.patterns.cursor())),
-                    Key::Char('l') => return Ok(LoopToggle(self.patterns.cursor())),
-                    Key::Char('L') => return Ok(LoopAdd(self.patterns.cursor())),
-                    Key::Char('\n') => return Ok(SelectPattern(self.patterns.cursor())),
-                    _ => {}
-                }
-            }
-            Focus::FileBrowser => {
-                let file_count = ctx.file_browser.entries.len();
-                let change = match key {
-                    Key::Down | Key::Ctrl('n') => {
-                        self.files.move_cursor(1, file_count);
-                        Noop
-                    }
-                    Key::Up | Key::Ctrl('p') => {
-                        self.files.move_cursor(-1, file_count);
-                        Noop
-                    }
-                    Key::Char('[') => {
+                    Key::Ctrl('u') => self.sounds.next(),
+                    Key::Ctrl('d') => self.sounds.prev(),
+                    Key::Char('u') => {
                         if let Some(dir) = ctx.file_browser.dir.parent() {
-                            self.files.select_first();
-                            ChangeDir(dir.to_path_buf())
-                        } else {
-                            Noop
+                            self.files = List::default();
+                            return Ok(ChangeDir(dir.to_path_buf()));
                         }
                     }
                     Key::Char(' ') => {
-                        let selected_path = &ctx.file_browser.entries[self.files.cursor()];
-                        PreviewSound(selected_path.to_path_buf())
+                        let selected_path = &ctx.file_browser.entries[self.files.pos];
+                        return Ok(PreviewSound(selected_path.to_path_buf()));
                     }
                     Key::Char('\n') => {
-                        let selected_path = &ctx.file_browser.entries[self.files.cursor()];
-                        if selected_path.is_dir() {
-                            self.files.select_first();
+                        let selected_path = &ctx.file_browser.entries[self.files.pos];
+                        let msg = if selected_path.is_dir() {
+                            self.files = List::default();
                             ChangeDir(selected_path.to_path_buf())
                         } else {
-                            LoadSound(self.cursor.track(), selected_path.to_path_buf())
-                        }
+                            LoadSound(self.sounds.pos, selected_path.to_path_buf())
+                        };
+                        return Ok(msg);
                     }
-                    _ => Noop,
+                    _ => self.files.input(key),
                 };
-                return Ok(change);
+                return Ok(Noop);
             }
         }
 
         Ok(Noop)
     }
 
-    fn move_cursor(&mut self, ctx: ViewContext, m: CursorMove) {
-        let (height, width) = ctx.selected_pattern().size();
-        let cursor = &mut self.cursor;
-        use CursorMove::*;
-        match m {
-            Left => cursor.column = cursor.column.saturating_sub(1),
-            Right => cursor.column = usize::min(cursor.column + 1, width - 1),
-            Start => cursor.column = 0,
-            End => cursor.column = width - 1,
-            Up => cursor.line = cursor.line.saturating_sub(1),
-            Down => cursor.line = usize::min(height - 1, cursor.line + 1),
+    fn handle_project_tree_input(&mut self, key: Key, _ctx: ViewContext) -> Result<Msg> {
+        use Msg::*;
+        match key {
+            Key::Char('s') => {
+                self.project_tree_state = ProjectTreeState::Sounds;
+                return Ok(Noop);
+            }
+            Key::Char('t') => {
+                self.project_tree_state = ProjectTreeState::Tracks;
+                return Ok(Noop);
+            }
+            _ => {}
+        };
+        match self.project_tree_state {
+            ProjectTreeState::Tracks => {
+                match key {
+                    Key::Char('\n') => {
+                        self.project_tree_state = ProjectTreeState::Devices(self.tracks.pos)
+                    }
+                    _ => self.tracks.input(key),
+                };
+                Ok(Noop)
+            }
+            ProjectTreeState::DeviceParams(track_idx, device_idx) => {
+                match key {
+                    Key::Char('u') => {
+                        self.project_tree_state = ProjectTreeState::Devices(track_idx)
+                    }
+                    Key::Char('[') => {
+                        return Ok(ParamInc(
+                            track_idx,
+                            device_idx,
+                            self.params.pos,
+                            StepSize::Default,
+                        ))
+                    }
+                    Key::Char(']') => {
+                        return Ok(ParamDec(
+                            track_idx,
+                            device_idx,
+                            self.params.pos,
+                            StepSize::Default,
+                        ))
+                    }
+                    Key::Char('{') => {
+                        return Ok(ParamInc(
+                            track_idx,
+                            device_idx,
+                            self.params.pos,
+                            StepSize::Large,
+                        ))
+                    }
+                    Key::Char('}') => {
+                        return Ok(ParamDec(
+                            track_idx,
+                            device_idx,
+                            self.params.pos,
+                            StepSize::Large,
+                        ))
+                    }
+                    _ => self.params.input(key),
+                };
+                Ok(Noop)
+            }
+            ProjectTreeState::Devices(track_idx) => {
+                match key {
+                    Key::Char('\n') => {
+                        self.project_tree_state =
+                            ProjectTreeState::DeviceParams(track_idx, self.devices.pos);
+                    }
+                    Key::Char('u') => {
+                        self.project_tree_state = ProjectTreeState::Tracks;
+                    }
+                    _ => self.devices.input(key),
+                };
+                Ok(Noop)
+            }
+            ProjectTreeState::Sounds => {
+                match key {
+                    Key::Char('l') => self.focus = Focus::FileLoader,
+                    _ => self.sounds.input(key),
+                };
+                Ok(Noop)
+            }
         }
     }
 
@@ -477,39 +615,40 @@ impl View {
     }
 
     fn set_state(&mut self, ctx: ViewContext) {
-        if self.patterns.cursor() >= ctx.song().len() {
-            self.patterns.select(Some(ctx.song().len() - 1));
+        self.patterns.set_len(ctx.song().len());
+        self.files.set_len(ctx.file_browser.entries.len());
+        match self.project_tree_state {
+            ProjectTreeState::DeviceParams(track, device) => {
+                self.params.set_len(ctx.params(track, device).len());
+            }
+            ProjectTreeState::Devices(track) => {
+                self.devices.set_len(ctx.devices(track).len());
+            }
+            ProjectTreeState::Sounds => {
+                self.sounds.set_len(ctx.sounds().len());
+            }
+            ProjectTreeState::Tracks => {
+                self.tracks.set_len(ctx.tracks().len());
+            }
         }
-
-        let pattern_size = ctx.selected_pattern().size();
-        self.cursor.clamp(pattern_size);
-
-        self.current_dir.clear();
-        for comp in ctx.file_browser.dir.components() {
-            let first_char = comp.as_str().chars().next().unwrap_or(' ');
-            self.current_dir.push(first_char.to_string());
-        }
-        if let Some(file_name) = ctx.file_browser.dir.file_name() {
-            self.current_dir.set_file_name(file_name);
-        }
+        self.cursor.set_pattern_size(ctx.selected_pattern().size());
     }
 }
 
-enum CursorMove {
-    Left,
-    Right,
-    Up,
-    Down,
-    Start,
-    End,
-}
-
-#[derive(PartialEq)]
+#[derive(PartialEq, Debug)]
 enum Focus {
     Editor,
     CommandLine,
-    FileBrowser,
+    ProjectTree,
+    FileLoader,
     Patterns,
+}
+
+enum ProjectTreeState {
+    Sounds,
+    Tracks,
+    Devices(usize),
+    DeviceParams(usize, usize),
 }
 
 fn set_sound(pos: Position, key: char) -> Msg {
@@ -595,45 +734,6 @@ impl StatefulWidget for CommandLine {
     }
 }
 
-impl ListCursorExt for ListState {
-    fn selected(&self) -> Option<usize> {
-        self.selected()
-    }
-
-    fn select(&mut self, index: Option<usize>) {
-        self.select(index)
-    }
-}
-
-pub trait ListCursorExt {
-    fn selected(&self) -> Option<usize>;
-    fn select(&mut self, index: Option<usize>);
-
-    fn select_first(&mut self) {
-        self.select(None); // ensures offset gets reset
-        self.select(Some(0));
-    }
-
-    fn move_cursor(&mut self, step: isize, max: usize) {
-        let max = max as isize;
-        if let Some(curr) = self.selected() {
-            let mut new = curr as isize + step;
-            if new >= max {
-                new -= max;
-            } else if new < 0 {
-                new += max;
-            }
-            self.select(Some(new as usize));
-        } else {
-            self.select(Some(0));
-        }
-    }
-
-    fn cursor(&self) -> usize {
-        self.selected().unwrap_or(0)
-    }
-}
-
 fn shorten_path(path: &Utf8PathBuf, width: usize) -> String {
     let str = path.as_str();
     if str.len() > width {
@@ -647,3 +747,85 @@ fn shorten_path(path: &Utf8PathBuf, width: usize) -> String {
 }
 
 const PATTERN_SECTION_WIDTH: usize = "|> 01 ~|  01  |".len();
+
+struct List {
+    pos: usize,
+    len: usize,
+    state: ListState,
+}
+
+impl List {
+    fn next(&mut self) {
+        self.pos = usize::min(self.pos + 1, self.len - 1);
+        self.state.select(Some(self.pos));
+    }
+
+    fn prev(&mut self) {
+        self.pos = self.pos.saturating_sub(1);
+        self.state.select(Some(self.pos));
+    }
+
+    fn set_len(&mut self, len: usize) {
+        self.len = len;
+        self.pos = usize::min(self.len - 1, self.pos);
+        self.state.select(Some(self.pos));
+    }
+
+    fn input(&mut self, key: Key) {
+        match key {
+            Key::Down | Key::Ctrl('n') => self.next(),
+            Key::Up | Key::Ctrl('p') => self.prev(),
+            _ => {}
+        }
+    }
+}
+
+impl Default for List {
+    fn default() -> Self {
+        let mut list = Self {
+            pos: 0,
+            len: 0,
+            state: ListState::default(),
+        };
+        list.state.select(Some(0));
+        list
+    }
+}
+
+#[derive(Default)]
+struct Cursor {
+    pos: Position,
+    pattern_size: (usize, usize),
+}
+
+impl Cursor {
+    fn set_pattern_size(&mut self, size: (usize, usize)) {
+        self.pattern_size = size;
+        self.pos.line = usize::min(size.0 - 1, self.pos.line);
+        self.pos.column = usize::min(size.1 - 1, self.pos.column);
+    }
+
+    fn up(&mut self) {
+        self.pos.line = self.pos.line.saturating_sub(1);
+    }
+
+    fn down(&mut self) {
+        self.pos.line = usize::min(self.pattern_size.0 - 1, self.pos.line + 1);
+    }
+
+    fn left(&mut self) {
+        self.pos.column = self.pos.column.saturating_sub(1);
+    }
+
+    fn right(&mut self) {
+        self.pos.column = usize::min(self.pattern_size.1 - 1, self.pos.column + 1);
+    }
+
+    fn start(&mut self) {
+        self.pos.column = 0;
+    }
+
+    fn end(&mut self) {
+        self.pos.column = self.pattern_size.1 - 1;
+    }
+}

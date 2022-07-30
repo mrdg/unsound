@@ -1,16 +1,29 @@
 use crate::audio::{Buffer, Frame, Stereo};
-use crate::engine::{Device, TrackContext};
+use crate::engine::{Device, DeviceContext};
 use crate::env::{Envelope, State as EnvelopeState};
+use crate::params::{self, ParamInfo, Params, ParamsBuilder};
 use crate::pattern::{NoteEvent, NOTE_OFF};
 use crate::SAMPLE_RATE;
 use anyhow::Result;
 use camino::Utf8PathBuf;
 use hound::WavReader;
 use std::sync::Arc;
-use std::time::Duration;
 
 pub const ROOT_PITCH: u8 = 48;
-const DEFAULT_RELEASE: Duration = Duration::from_millis(50);
+
+#[derive(Clone)]
+enum SamplerParam {
+    EnvAttack = 0,
+    EnvDecay,
+    EnvSustain,
+    EnvRelease,
+}
+
+impl From<SamplerParam> for usize {
+    fn from(p: SamplerParam) -> usize {
+        p as usize
+    }
+}
 
 struct Voice {
     position: f32,
@@ -21,7 +34,7 @@ struct Voice {
     env: Envelope,
     column: usize,
     sample: Option<Arc<AudioFile>>,
-    gate: f32,
+    gate: f64,
 }
 
 #[derive(PartialEq, Debug)]
@@ -31,8 +44,8 @@ enum VoiceState {
 }
 
 impl<'a> Voice {
-    fn new() -> Self {
-        let adsr = Adsr::default();
+    fn new(params: &Params) -> Self {
+        let adsr = params.adsr();
         Self {
             position: 0.0,
             column: 0,
@@ -56,47 +69,10 @@ pub struct Sound {
 
 #[derive(Clone)]
 pub struct Adsr {
-    pub attack: Duration,
-    pub decay: Duration,
-    pub sustain: f32,
-    pub release: Duration,
-}
-
-impl Adsr {
-    pub fn set_attack(&mut self, secs: f32) {
-        if secs >= 0.0 && secs <= 20.0 {
-            self.attack = Duration::from_secs_f32(secs)
-        }
-    }
-
-    pub fn set_decay(&mut self, secs: f32) {
-        if secs >= 0.001 && secs <= 60.0 {
-            self.decay = Duration::from_secs_f32(secs)
-        }
-    }
-
-    pub fn set_sustain(&mut self, sustain: f32) {
-        if sustain >= 0.005 && sustain <= 1.0 {
-            self.sustain = sustain
-        }
-    }
-
-    pub fn set_release(&mut self, secs: f32) {
-        if secs >= 0.001 && secs <= 60.0 {
-            self.release = Duration::from_secs_f32(secs)
-        }
-    }
-}
-
-impl Default for Adsr {
-    fn default() -> Adsr {
-        Self {
-            attack: Duration::from_millis(0),
-            decay: Duration::from_millis(50),
-            sustain: 0.5,
-            release: DEFAULT_RELEASE,
-        }
-    }
+    pub attack: f64,
+    pub decay: f64,
+    pub sustain: f64,
+    pub release: f64,
 }
 
 pub struct AudioFile {
@@ -143,10 +119,38 @@ pub struct Sampler {
 }
 
 impl Sampler {
-    pub fn new() -> Self {
+    pub fn params() -> Params {
+        let mut p = ParamsBuilder::new();
+        use SamplerParam::*;
+        p.insert(
+            EnvAttack,
+            ParamInfo::new("Envelope Attack", 1, 1, 20_000)
+                .with_steps([5, 100])
+                .with_formatter(params::format_millis),
+        );
+        p.insert(
+            EnvDecay,
+            ParamInfo::new("Envelope Decay", 500, 5, 20_000)
+                .with_steps([5, 100])
+                .with_formatter(params::format_millis),
+        );
+        p.insert(
+            EnvSustain,
+            ParamInfo::new("Envelope Sustain", 1.0, 0.01, 1.0),
+        );
+        p.insert(
+            EnvRelease,
+            ParamInfo::new("Envelope Release", 5_000, 5, 20_000)
+                .with_steps([5, 100])
+                .with_formatter(params::format_millis),
+        );
+        p.build()
+    }
+
+    pub fn new(params: &Params) -> Self {
         let mut voices = Vec::with_capacity(8);
         for _ in 0..voices.capacity() {
-            voices.push(Voice::new());
+            voices.push(Voice::new(params));
         }
         Self { voices }
     }
@@ -154,7 +158,7 @@ impl Sampler {
     pub fn note_on(
         &mut self,
         sound: &Sound,
-        ctx: TrackContext,
+        ctx: DeviceContext,
         column: usize,
         pitch: u8,
         velocity: u8,
@@ -165,9 +169,8 @@ impl Sampler {
             voice.gate = 1.0;
             voice.state = VoiceState::Busy;
 
-            if let Some(adsr) = ctx.adsr {
-                voice.env.update(adsr);
-            }
+            let adsr = ctx.params().adsr();
+            voice.env = Envelope::new(adsr.attack, adsr.decay, adsr.sustain, adsr.release);
 
             voice.pitch = pitch;
             voice.volume = gain_factor(map(velocity.into(), (0.0, 127.0), (-60.0, 0.0)));
@@ -198,8 +201,25 @@ fn gain_factor(db: f32) -> f32 {
     f32::powf(10.0, db / 20.0)
 }
 
+trait SamplerConfig {
+    fn adsr(&self) -> Adsr;
+}
+
+impl<'a> SamplerConfig for Params {
+    fn adsr(&self) -> Adsr {
+        use SamplerParam::*;
+        Adsr {
+            attack: self.value(EnvAttack),
+            decay: self.value(EnvDecay),
+            sustain: self.value(EnvSustain),
+            release: self.value(EnvRelease),
+        }
+    }
+}
+
 impl Device for Sampler {
-    fn render(&mut self, ctx: TrackContext, buffer: &mut [Stereo]) {
+    fn render(&mut self, ctx: DeviceContext, buffer: &mut [Stereo]) {
+        let adsr = ctx.params().adsr();
         for voice in &mut self.voices {
             if voice.state == VoiceState::Free {
                 continue;
@@ -214,12 +234,8 @@ impl Device for Sampler {
                 let next_frame = sample.buf[pos + 1];
                 let new_frame = frame * inverse_weight + next_frame * weight;
 
-                let mut env = 1.0;
-                if let Some(adsr) = ctx.adsr {
-                    voice.env.update(adsr);
-                    env = voice.env.value(voice.gate) as f32;
-                }
-                *dst_frame += new_frame * voice.volume * env;
+                voice.env.update(&adsr);
+                *dst_frame += new_frame * voice.volume * voice.env.value(voice.gate) as f32;
 
                 voice.position += voice.pitch_ratio;
                 if voice.position >= (sample.buf.len() - 1) as f32 {
@@ -228,14 +244,14 @@ impl Device for Sampler {
                     break;
                 }
             }
-            if ctx.adsr.is_some() && voice.env.state == EnvelopeState::Idle {
+            if voice.env.state == EnvelopeState::Idle {
                 voice.state = VoiceState::Free;
                 voice.sample = None;
             }
         }
     }
 
-    fn send_event(&mut self, ctx: TrackContext, event: &NoteEvent) {
+    fn send_event(&mut self, ctx: DeviceContext, event: &NoteEvent) {
         if event.pitch == NOTE_OFF {
             self.note_off(event.track as usize);
         } else if let Some(sound) = ctx.sound(event.sound.into()) {

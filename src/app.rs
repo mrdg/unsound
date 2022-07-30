@@ -6,8 +6,9 @@ use triple_buffer::{Input, Output};
 use crate::audio::Stereo;
 use crate::engine::{self, INSTRUMENT_TRACKS, TOTAL_TRACKS};
 use crate::files::FileBrowser;
+use crate::params::Params;
 use crate::pattern::{Position, Step, StepSize, MAX_PATTERNS};
-use crate::sampler::{self, Adsr, AudioFile, Sampler};
+use crate::sampler::{self, AudioFile, Sampler};
 use crate::view;
 use crate::view::{InputQueue, View};
 use crate::{engine::EngineCommand, pattern::Pattern, sampler::Sound};
@@ -214,38 +215,36 @@ impl App {
                 let cmd = EngineCommand::CreateTrack(track_id, Box::new(engine::Track::new()));
                 self.send_to_engine(cmd)?;
 
-                let sampler = Box::new(Sampler::new());
+                let params = Sampler::params();
+                let sampler = Box::new(Sampler::new(&params));
                 let sampler_id = self.id_generator.device();
                 self.send_to_engine(EngineCommand::CreateDevice(track_id, sampler_id, sampler))?;
 
-                let volume = Box::new(engine::Volume {});
-                let volume_id = self.id_generator.device();
-                self.send_to_engine(EngineCommand::CreateDevice(track_id, volume_id, volume))?;
+                let sampler = Device {
+                    name: "Sampler".to_owned(),
+                    id: sampler_id,
+                    params,
+                };
 
                 let track = Track {
                     id: track_id,
-                    devices: vec![sampler_id, volume_id],
+                    devices: vec![sampler],
                     muted: false,
                     track_type,
                     volume: Volume::new(-6.0),
-                    adsr: Adsr::default(),
+                    name: None,
                 };
                 self.state.tracks.insert(idx, track);
             }
-            SetAdsr(idx, a, d, s, r) => {
-                let track = &mut self.state.tracks[idx];
-                if let Some(a) = a {
-                    track.adsr.set_attack(a)
-                }
-                if let Some(d) = d {
-                    track.adsr.set_decay(d)
-                }
-                if let Some(s) = s {
-                    track.adsr.set_sustain(s)
-                }
-                if let Some(r) = r {
-                    track.adsr.set_release(r)
-                }
+            ParamInc(track_idx, device_idx, param_idx, step_size) => {
+                self.state.tracks[track_idx].devices[device_idx]
+                    .params
+                    .incr(param_idx, step_size);
+            }
+            ParamDec(track_idx, device_idx, param_idx, step_size) => {
+                self.state.tracks[track_idx].devices[device_idx]
+                    .params
+                    .decr(param_idx, step_size);
             }
         }
 
@@ -354,11 +353,18 @@ pub struct AppState {
 #[derive(Clone)]
 pub struct Track {
     pub id: TrackID,
-    pub devices: Vec<DeviceID>,
+    pub devices: Vec<Device>,
     pub track_type: TrackType,
+    pub name: Option<String>,
     volume: Volume,
     muted: bool,
-    adsr: Adsr,
+}
+
+#[derive(Clone)]
+pub struct Device {
+    pub id: DeviceID,
+    pub name: String,
+    pub params: Params,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -382,6 +388,7 @@ pub fn new() -> Result<(AppState, EngineState)> {
     let engine_state = EngineState {
         current_pattern: 0,
         current_tick: 0,
+        // TODO: avoid pre-allocating this by having a per-track triple buffer?
         rms: vec![Stereo::ZERO; TOTAL_TRACKS],
     };
 
@@ -431,7 +438,8 @@ pub enum Msg {
     VolumeDec(Option<usize>),
     SetVolume(Option<usize>, f64),
     CreateTrack(usize, TrackType),
-    SetAdsr(usize, Option<f32>, Option<f32>, Option<f32>, Option<f32>),
+    ParamInc(usize, usize, usize, StepSize),
+    ParamDec(usize, usize, usize, StepSize),
 }
 
 impl Msg {
@@ -490,6 +498,11 @@ pub trait SharedState {
             false
         }
     }
+
+    fn params(&self, track_idx: usize, device_idx: usize) -> &Params {
+        let device = &self.app().tracks[track_idx].devices[device_idx];
+        &device.params
+    }
 }
 
 #[derive(Copy, Clone)]
@@ -510,6 +523,14 @@ impl<'a> ViewContext<'a> {
         self.song()
             .iter()
             .map(move |id| self.app().patterns.get(id).unwrap())
+    }
+
+    pub fn tracks(&self) -> &Vec<Track> {
+        &self.app_state.tracks
+    }
+
+    pub fn devices(&self, track_idx: usize) -> &Vec<Device> {
+        &self.app_state.tracks[track_idx].devices
     }
 
     pub fn current_line(&self) -> usize {
@@ -544,6 +565,7 @@ impl<'a> ViewContext<'a> {
                     muted: track.muted,
                     volume: track.volume.db(),
                     is_master: matches!(track.track_type, TrackType::Master),
+                    name: track.name.as_deref(),
                 }
             })
     }
@@ -551,6 +573,7 @@ impl<'a> ViewContext<'a> {
 
 pub struct TrackView<'a> {
     pub steps: Option<&'a [Step]>,
+    pub name: Option<&'a str>,
     pub index: usize,
     pub muted: bool,
     pub volume: f64,
@@ -578,8 +601,8 @@ impl<'a> AudioContext<'a> {
         &self.app_state.tracks
     }
 
-    pub fn adsr(&self, track: usize) -> &'a Adsr {
-        &self.app_state.tracks[track].adsr
+    pub fn device(&self, track_idx: usize, device_idx: usize) -> &Device {
+        &self.app_state.tracks[track_idx].devices[device_idx]
     }
 
     pub fn instrument_tracks(&self) -> impl Iterator<Item = &Track> {

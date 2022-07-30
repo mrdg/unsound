@@ -24,11 +24,6 @@ impl Position {
         self.column / INPUTS_PER_STEP
     }
 
-    pub fn clamp(&mut self, pattern_size: (usize, usize)) {
-        self.line = usize::min(pattern_size.0 - 1, self.line);
-        self.column = usize::min(pattern_size.1 - 1, self.column);
-    }
-
     pub fn input_type(&self) -> InputType {
         match self.column % INPUTS_PER_STEP {
             0 => InputType::Pitch,
