@@ -1,10 +1,10 @@
 use anyhow::{anyhow, Result};
 use camino::Utf8PathBuf;
 use ringbuf::Producer;
-use triple_buffer::{Input, Output};
+use triple_buffer::{Input, Output, TripleBuffer};
 
 use crate::audio::Stereo;
-use crate::engine::{self, INSTRUMENT_TRACKS, TOTAL_TRACKS};
+use crate::engine::{self, INSTRUMENT_TRACKS};
 use crate::files::FileBrowser;
 use crate::params::Params;
 use crate::pattern::{Position, Step, StepSize, MAX_PATTERNS};
@@ -32,6 +32,7 @@ pub struct App {
     file_browser: FileBrowser,
     file_cache: HashMap<Utf8PathBuf, Arc<AudioFile>>,
     id_generator: IdGenerator,
+    track_rms: HashMap<TrackID, Output<Stereo>>,
 }
 
 impl App {
@@ -49,6 +50,7 @@ impl App {
             file_browser: FileBrowser::with_path("./sounds")?,
             file_cache: HashMap::new(),
             id_generator: IdGenerator { current: 0 },
+            track_rms: HashMap::new(),
         };
         Ok(app)
     }
@@ -67,6 +69,9 @@ impl App {
         let mut view = View::new();
         loop {
             self.engine_state_buf.update();
+            for track in &mut self.state.tracks {
+                track.rms = *self.track_rms.get_mut(&track.id).unwrap().read();
+            }
             let ctx = ViewContext {
                 app_state: &self.state,
                 engine_state: self.engine_state_buf.output_buffer(),
@@ -211,8 +216,11 @@ impl App {
             SetVolume(track, value) => self.track_volume(track).set(value),
             CreateTrack(idx, track_type) => {
                 let track_id = self.id_generator.track();
+                let rms = Stereo::ZERO;
+                let (input, output) = TripleBuffer::new(&rms).split();
+                self.track_rms.insert(track_id, output);
 
-                let cmd = EngineCommand::CreateTrack(track_id, Box::new(engine::Track::new()));
+                let cmd = EngineCommand::CreateTrack(track_id, Box::new(engine::Track::new(input)));
                 self.send_to_engine(cmd)?;
 
                 let params = Sampler::params();
@@ -233,6 +241,7 @@ impl App {
                     track_type,
                     volume: Volume::new(-6.0),
                     name: None,
+                    rms: Stereo::ZERO,
                 };
                 self.state.tracks.insert(idx, track);
             }
@@ -313,27 +322,10 @@ impl App {
     }
 }
 
+#[derive(Clone)]
 pub struct EngineState {
     pub current_tick: usize,
     pub current_pattern: usize,
-    pub rms: Vec<Stereo>,
-}
-
-// TODO: use a macro to generate an allocation-free clone_from?
-impl Clone for EngineState {
-    fn clone(&self) -> Self {
-        Self {
-            current_tick: self.current_tick,
-            current_pattern: self.current_pattern,
-            rms: self.rms.clone(),
-        }
-    }
-
-    fn clone_from(&mut self, source: &Self) {
-        self.current_tick = source.current_tick;
-        self.current_pattern = source.current_pattern;
-        self.rms.clone_from(&source.rms);
-    }
 }
 
 #[derive(Clone)]
@@ -358,6 +350,7 @@ pub struct Track {
     pub name: Option<String>,
     volume: Volume,
     muted: bool,
+    rms: Stereo,
 }
 
 #[derive(Clone)]
@@ -388,8 +381,6 @@ pub fn new() -> Result<(AppState, EngineState)> {
     let engine_state = EngineState {
         current_pattern: 0,
         current_tick: 0,
-        // TODO: avoid pre-allocating this by having a per-track triple buffer?
-        rms: vec![Stereo::ZERO; TOTAL_TRACKS],
     };
 
     let app_state = AppState {
@@ -543,7 +534,7 @@ impl<'a> ViewContext<'a> {
     }
 
     pub fn rms(&self, track: usize) -> (f32, f32) {
-        let rms = self.engine_state.rms[track];
+        let rms = self.app_state.tracks[track].rms;
         (rms.channel(0), rms.channel(1))
     }
 
