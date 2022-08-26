@@ -7,7 +7,7 @@ use triple_buffer::Input;
 use crate::app::{AppState, AudioContext, DeviceID, EngineState, SharedState, TrackID};
 use crate::audio::{Buffer, Rms, Stereo};
 use crate::params::Params;
-use crate::pattern::NoteEvent;
+use crate::pattern::{NoteEvent, DEFAULT_VELOCITY};
 use crate::sampler::{Sampler, Sound, ROOT_PITCH};
 use crate::{INTERNAL_BUFFER_SIZE, SAMPLE_RATE};
 
@@ -125,6 +125,7 @@ impl Engine {
                     device.render(device_ctx, &mut self.track_buf[..block_size]);
                 }
 
+                // TODO: measure rms after volume fader
                 track.rms.add_frames(&self.track_buf[..block_size]);
 
                 for j in 0..block_size {
@@ -183,7 +184,7 @@ impl Engine {
                 }
 
                 self.state.current_tick += 1;
-                if self.state.current_tick >= pattern.length {
+                if self.state.current_tick >= pattern.len() {
                     self.state.current_tick = 0;
                     curr_pattern = ctx.next_pattern(curr_pattern);
                 }
@@ -208,7 +209,8 @@ impl Engine {
             match cmd {
                 EngineCommand::PreviewSound(snd) => {
                     let ctx = DeviceContext::for_preview(&ctx, &self.preview_params);
-                    self.preview.note_on(&snd, ctx, 0, ROOT_PITCH, 80);
+                    self.preview
+                        .note_on(&snd, ctx, ROOT_PITCH, DEFAULT_VELOCITY);
                 }
                 EngineCommand::CreateTrack(track_id, track) => {
                     self.tracks.insert(track_id, track);

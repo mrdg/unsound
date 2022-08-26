@@ -18,6 +18,7 @@ cpal = "0.13.3"
 assert_no_alloc = "1.1.2"
 triple_buffer = "6.0.0"
 rand = "0.8.5"
+num-traits = "0.2"
 
 [features]
 

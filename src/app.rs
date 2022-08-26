@@ -7,7 +7,7 @@ use crate::audio::Stereo;
 use crate::engine::{self, INSTRUMENT_TRACKS};
 use crate::files::FileBrowser;
 use crate::params::Params;
-use crate::pattern::{Position, Step, StepSize, MAX_PATTERNS};
+use crate::pattern::{self, Position, Step, StepSize, MAX_PATTERNS};
 use crate::sampler::{self, AudioFile, Sampler};
 use crate::view;
 use crate::view::{InputQueue, View};
@@ -107,18 +107,7 @@ impl App {
             TogglePlay => {
                 self.state.is_playing = !self.state.is_playing;
             }
-            SetPitch(pos, pitch) => {
-                let oct = self.state.octave as u8;
-                let pitch = oct * 12 + pitch;
-                self.update_pattern(|p| p.set_pitch(pos, pitch));
-            }
-            SetNoteOff(pos) => {
-                self.update_pattern(|p| p.set_note_off(pos));
-            }
-            SetSound(pos, idx) => self.update_pattern(|p| p.set_sound(pos, idx)),
-            DeleteNoteValue(pos) => self.update_pattern(|p| p.delete(pos)),
-            PatternInc(pos, step_size) => self.update_pattern(|p| p.inc(pos, step_size)),
-            PatternDec(pos, step_size) => self.update_pattern(|p| p.dec(pos, step_size)),
+            SetPatternStep(pos, step) => self.update_pattern(|p| p.set_step(pos, step)),
             SetBpm(bpm) => self.state.bpm = bpm,
             SetOct(oct) => self.state.octave = oct,
             LoadSound(idx, path) => {
@@ -185,7 +174,14 @@ impl App {
             CreatePattern(idx) => {
                 if self.state.patterns.len() < MAX_PATTERNS {
                     let id = self.next_pattern_id();
-                    let pattern = Pattern::new();
+                    let num_instruments = self
+                        .state
+                        .tracks
+                        .iter()
+                        .filter(|track| matches!(track.track_type, TrackType::Instrument))
+                        .count();
+
+                    let pattern = Pattern::new(num_instruments);
                     self.state.patterns.insert(id, Arc::new(pattern));
                     if let Some(idx) = idx {
                         self.state.song.insert(idx + 1, id);
@@ -205,7 +201,7 @@ impl App {
                 self.state.patterns.insert(id, clone);
                 self.state.song.insert(idx + 1, id);
             }
-            SetPatternLen(len) => self.update_pattern(|p| p.length = len),
+            SetPatternLen(len) => self.update_pattern(|p| p.set_len(len)),
             ChangeDir(dir) => self.file_browser.move_to(dir)?,
             ToggleMute(track) => {
                 let muted = &mut self.state.tracks[track].muted;
@@ -403,12 +399,7 @@ pub enum Msg {
     Noop,
     Exit,
     TogglePlay,
-    SetPitch(Position, u8),
-    SetNoteOff(Position),
-    PatternInc(Position, StepSize),
-    PatternDec(Position, StepSize),
-    SetSound(Position, i32),
-    DeleteNoteValue(Position),
+    SetPatternStep(Position, Step),
     LoadSound(usize, Utf8PathBuf),
     PreviewSound(Utf8PathBuf),
     LoopAdd(usize),
@@ -520,6 +511,20 @@ impl<'a> ViewContext<'a> {
         &self.app_state.tracks
     }
 
+    pub fn octave(&self) -> u16 {
+        self.app_state.octave
+    }
+
+    pub fn update_step<F>(&self, pos: Position, f: F) -> Step
+    where
+        F: Fn(Box<dyn pattern::Input + '_>),
+    {
+        let mut step = self.selected_pattern().step(pos);
+        let input = step.input(pos);
+        f(input);
+        step
+    }
+
     pub fn devices(&self, track_idx: usize) -> &Vec<Device> {
         &self.app_state.tracks[track_idx].devices
     }
@@ -538,6 +543,18 @@ impl<'a> ViewContext<'a> {
         (rms.channel(0), rms.channel(1))
     }
 
+    pub fn master_track(&self) -> TrackView {
+        let track = self.app_state.tracks.last().unwrap();
+        TrackView {
+            steps: None,
+            index: self.app_state.tracks.len() - 1,
+            muted: false,
+            volume: track.volume.db(),
+            is_master: true,
+            name: Some("Master"),
+        }
+    }
+
     pub fn iter_tracks(&self) -> impl Iterator<Item = TrackView> {
         let pattern = self.selected_pattern();
         self.app_state
@@ -546,7 +563,7 @@ impl<'a> ViewContext<'a> {
             .enumerate()
             .map(move |(i, track)| {
                 let steps = match track.track_type {
-                    TrackType::Instrument => Some(&pattern.tracks[i].steps[..pattern.length]),
+                    TrackType::Instrument => Some(pattern.steps(i)),
                     _ => None,
                 };
 
@@ -563,7 +580,7 @@ impl<'a> ViewContext<'a> {
 }
 
 pub struct TrackView<'a> {
-    pub steps: Option<&'a [Step]>,
+    pub steps: Option<&'a Vec<Step>>,
     pub name: Option<&'a str>,
     pub index: usize,
     pub muted: bool,
@@ -575,6 +592,12 @@ impl TrackView<'_> {
     pub fn steps(&self, range: &Range<usize>) -> &[Step] {
         self.steps
             .map_or(&[], |steps| &steps[range.start..range.end])
+    }
+
+    pub fn name(&self) -> String {
+        self.name
+            .map(|s| s.to_owned())
+            .unwrap_or_else(|| self.index.to_string())
     }
 }
 

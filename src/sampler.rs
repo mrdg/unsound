@@ -2,7 +2,7 @@ use crate::audio::{Buffer, Frame, Stereo};
 use crate::engine::{Device, DeviceContext};
 use crate::env::{Envelope, State as EnvelopeState};
 use crate::params::{self, ParamInfo, Params, ParamsBuilder};
-use crate::pattern::{NoteEvent, NOTE_OFF};
+use crate::pattern::{Effect, NoteEvent, DEFAULT_VELOCITY, NOTE_OFF};
 use crate::SAMPLE_RATE;
 use anyhow::Result;
 use camino::Utf8PathBuf;
@@ -32,7 +32,6 @@ struct Voice {
     pitch: u8,
     volume: f32,
     env: Envelope,
-    column: usize,
     sample: Option<Arc<AudioFile>>,
     gate: f64,
 }
@@ -48,7 +47,6 @@ impl<'a> Voice {
         let adsr = params.adsr();
         Self {
             position: 0.0,
-            column: 0,
             pitch: 0,
             volume: 0.0,
             pitch_ratio: 0.,
@@ -130,7 +128,7 @@ impl Sampler {
         );
         p.insert(
             EnvDecay,
-            ParamInfo::new("Envelope Decay", 500, 5, 20_000)
+            ParamInfo::new("Envelope Decay", 200, 5, 20_000)
                 .with_steps([5, 100])
                 .with_formatter(params::format_millis),
         );
@@ -140,7 +138,7 @@ impl Sampler {
         );
         p.insert(
             EnvRelease,
-            ParamInfo::new("Envelope Release", 5_000, 5, 20_000)
+            ParamInfo::new("Envelope Release", 100, 5, 20_000)
                 .with_steps([5, 100])
                 .with_formatter(params::format_millis),
         );
@@ -148,23 +146,14 @@ impl Sampler {
     }
 
     pub fn new(params: &Params) -> Self {
-        let mut voices = Vec::with_capacity(8);
+        let mut voices = Vec::with_capacity(12);
         for _ in 0..voices.capacity() {
             voices.push(Voice::new(params));
         }
         Self { voices }
     }
 
-    pub fn note_on(
-        &mut self,
-        sound: &Sound,
-        ctx: DeviceContext,
-        column: usize,
-        pitch: u8,
-        velocity: u8,
-    ) {
-        self.note_off(column);
-
+    pub fn note_on(&mut self, sound: &Sound, ctx: DeviceContext, pitch: u8, velocity: u8) {
         if let Some(voice) = self.voices.iter_mut().find(|v| v.state == VoiceState::Free) {
             voice.gate = 1.0;
             voice.state = VoiceState::Busy;
@@ -174,7 +163,6 @@ impl Sampler {
 
             voice.pitch = pitch;
             voice.volume = gain_factor(map(velocity.into(), (0.0, 127.0), (-60.0, 0.0)));
-            voice.column = column;
 
             let pitch = pitch as i8 - ROOT_PITCH as i8;
             voice.pitch_ratio = f32::powf(2., pitch as f32 / 12.0)
@@ -186,13 +174,11 @@ impl Sampler {
         }
     }
 
-    fn note_off(&mut self, column: usize) {
-        if let Some(voice) = self
-            .voices
-            .iter_mut()
-            .find(|v| v.state == VoiceState::Busy && v.column == column)
-        {
-            voice.gate = 0.0;
+    fn release_voices(&mut self) {
+        for v in &mut self.voices {
+            if v.state == VoiceState::Busy {
+                v.gate = 0.0;
+            }
         }
     }
 }
@@ -252,14 +238,51 @@ impl Device for Sampler {
     }
 
     fn send_event(&mut self, ctx: DeviceContext, event: &NoteEvent) {
+        let mut velocity: Option<u8> = None;
+        let mut chord: [Option<u8>; 3] = [None; 3];
+
+        for effect in [event.fx1, event.fx2].iter().flatten() {
+            match effect {
+                Effect::Chord(c) => {
+                    if let Some(c) = c {
+                        chord = make_chord(*c);
+                    }
+                }
+                Effect::Velocity(v) => {
+                    if let Some(v) = v {
+                        velocity = Some(*v);
+                    }
+                }
+            }
+        }
         if event.pitch == NOTE_OFF {
-            self.note_off(event.track as usize);
+            self.release_voices();
         } else if let Some(sound) = ctx.sound(event.sound.into()) {
-            self.note_on(sound, ctx, event.track.into(), event.pitch, 100);
+            self.release_voices();
+            let velocity = velocity.unwrap_or(DEFAULT_VELOCITY);
+            self.note_on(sound, ctx, event.pitch, velocity);
+            for offset in chord.iter().flatten() {
+                self.note_on(sound, ctx, event.pitch + offset, velocity);
+            }
         }
     }
 }
 
 fn map(v: f32, from: (f32, f32), to: (f32, f32)) -> f32 {
     (v - from.0) * (to.1 - to.0) / (from.1 - from.0) + to.0
+}
+
+fn make_chord(n: i16) -> [Option<u8>; 3] {
+    let mut n = n;
+    let mut d = 100;
+    let mut chord: [Option<u8>; 3] = [None; 3];
+    for offset in &mut chord {
+        let semitones = n / d;
+        if semitones > 0 {
+            *offset = Some(semitones as u8)
+        }
+        n %= d;
+        d /= 10;
+    }
+    chord
 }

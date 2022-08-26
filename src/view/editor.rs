@@ -1,7 +1,7 @@
 use std::ops::Range;
 
 use crate::app::{SharedState, TrackView, ViewContext};
-use crate::pattern::{Position, MAX_PITCH};
+use crate::pattern::{Position, INPUTS_PER_STEP, MAX_PITCH};
 use tui::layout::{Alignment, Constraint, Direction, Layout};
 use tui::widgets::Paragraph;
 use tui::{
@@ -14,7 +14,8 @@ use tui::{
 
 #[derive(Clone, Default)]
 pub struct EditorState {
-    offset: usize,
+    line_offset: usize,
+    track_offset: usize,
 }
 
 pub struct Editor<'a> {
@@ -136,80 +137,92 @@ impl<'a> Editor<'a> {
         button.render(button_area, buf);
     }
 
-    fn render_track_steps(
-        &self,
-        area: Rect,
-        buf: &mut Buffer,
-        track: &TrackView,
-        index: usize,
-        steps: &Range<usize>,
-    ) {
-        // Draw track header
-        let header = if track.is_master {
-            String::from(" Master")
-        } else {
-            format!(" {}", index)
-        };
+    fn render_track_header(&self, area: Rect, buf: &mut Buffer, track: &TrackView) {
+        let track_name = format!(" {}", track.name());
         let bg_color = Color::Indexed(250);
-        let header = Paragraph::new(header)
+        let header = Paragraph::new(track_name)
             .alignment(Alignment::Left)
             .style(Style::default().bg(bg_color).fg(Color::Black));
 
         let header_area = Rect { height: 1, ..area };
         header.render(header_area, buf);
+    }
 
-        if track.is_master {
-            return;
-        }
-
-        // Draw notes
+    fn render_track_steps(
+        &self,
+        area: Rect,
+        buf: &mut Buffer,
+        track: &TrackView,
+        steps: &Range<usize>,
+    ) {
         let mut y = area.top() + 1;
         for (line, note) in track.steps(steps).iter().enumerate() {
             let line = line + steps.start;
-            let base_style = self.get_base_style(line, false);
-            let column = index * 2;
+            let column = track.index * INPUTS_PER_STEP;
 
-            let highlight = note.pitch.is_some() && self.is_playing;
-            let pitch_style = self.get_input_style(line, column, highlight);
             let pitch = match note.pitch {
                 Some(pitch) => &NOTE_NAMES[pitch as usize],
                 None => "---",
             };
 
-            let snd_style = self.get_input_style(line, column + 1, false);
             let snd = match note.sound {
                 Some(v) => format!("{:0width$}", v, width = 2),
                 None => String::from("--"),
             };
 
+            let effects: Vec<(String, String)> = [note.effect1, note.effect2]
+                .iter()
+                .map(|effect| match effect {
+                    Some(effect) => {
+                        let desc = effect.desc();
+                        (
+                            desc.effect_type,
+                            desc.value.unwrap_or_else(|| "---".to_string()),
+                        )
+                    }
+                    None => ("-".to_string(), "---".to_string()),
+                })
+                .collect();
+
+            let line_style = if line % self.lines_per_beat == 0 {
+                Style::default().bg(Color::Indexed(236))
+            } else {
+                Style::default()
+            };
+            let input_style = |offset: usize| {
+                if self.in_focus
+                    && self.cursor.line == line
+                    && self.cursor.column == column + offset
+                {
+                    Style::default().bg(Color::Green).fg(Color::Black)
+                } else if self.current_line.unwrap_or(usize::MAX) == line
+                    && offset == 0
+                    && note.pitch.is_some()
+                    && self.is_playing
+                {
+                    // Pitch input is highlighted when it's the currently active note
+                    Style::default().bg(Color::Indexed(239)).fg(Color::White)
+                } else {
+                    line_style
+                }
+            };
+
             let spans = Spans::from(vec![
-                Span::styled(" ", base_style),
-                Span::styled(pitch, pitch_style),
-                Span::styled(" ", base_style),
-                Span::styled(snd, snd_style),
-                Span::styled(" ", base_style),
+                Span::styled(" ", line_style),
+                Span::styled(pitch, input_style(0)),
+                Span::styled(" ", line_style),
+                Span::styled(snd, input_style(1)),
+                Span::styled(" ", line_style),
+                Span::styled(&effects[0].0, input_style(2)),
+                Span::styled(&effects[0].1, input_style(3)),
+                Span::styled(" ", line_style),
+                Span::styled(&effects[1].0, input_style(4)),
+                Span::styled(&effects[1].1, input_style(5)),
+                Span::styled(" ", line_style),
             ]);
 
             buf.set_spans(area.left(), y, &spans, area.width);
             y += 1;
-        }
-    }
-
-    fn get_input_style(&self, line: usize, col: usize, active: bool) -> Style {
-        if self.in_focus && self.cursor.line == line && self.cursor.column == col {
-            Style::default().bg(Color::Green).fg(Color::Black)
-        } else {
-            self.get_base_style(line, active)
-        }
-    }
-
-    fn get_base_style(&self, line: usize, active: bool) -> Style {
-        if self.current_line.is_some() && self.current_line.unwrap() == line && active {
-            Style::default().bg(Color::Indexed(239)).fg(Color::White)
-        } else if line % self.lines_per_beat == 0 {
-            Style::default().bg(Color::Indexed(236))
-        } else {
-            Style::default()
         }
     }
 }
@@ -229,28 +242,38 @@ impl<'a> StatefulWidget for &Editor<'a> {
         let header_height = 1;
         let height = pattern_area.height as usize - header_height - 1;
         let pattern = self.ctx.selected_pattern();
-        let mut last_line = state.offset + std::cmp::min(height, pattern.length);
+        let mut last_line = state.line_offset + std::cmp::min(height, pattern.len());
 
-        if last_line > pattern.length {
+        if last_line > pattern.len() {
             // pattern length must have been changed so reset offset
-            state.offset = 0;
-            last_line = state.offset + std::cmp::min(height, pattern.length);
+            state.line_offset = 0;
+            last_line = state.line_offset + std::cmp::min(height, pattern.len());
         }
 
         if self.cursor.line > last_line {
             last_line = self.cursor.line + 1;
-            state.offset = last_line - height;
-        } else if self.cursor.line < state.offset {
-            state.offset = self.cursor.line;
-            last_line = state.offset + height;
+            state.line_offset = last_line - height;
+        } else if self.cursor.line < state.line_offset {
+            state.line_offset = self.cursor.line;
+            last_line = state.line_offset + height;
+        }
+
+        let pattern_width = pattern_area.width - STEPS_WIDTH;
+        let num_tracks = ((pattern_width - MASTER_TRACK_WIDTH) / TRACK_WIDTH) as usize;
+
+        let selected_track = self.cursor.track();
+        if selected_track >= state.track_offset + num_tracks {
+            state.track_offset = selected_track + 1 - num_tracks;
+        } else if selected_track < state.track_offset {
+            state.track_offset = selected_track;
         }
 
         let left = area.left() + 1;
-        let steps = state.offset..last_line;
+        let steps = state.line_offset..last_line;
 
         // Draw the step indicator next to the pattern grid
         let style = Style::default().fg(Color::Indexed(241));
-        buf.set_string(left, area.top(), format!("{:>3}", pattern.length), style);
+        buf.set_string(left, area.top(), format!("{:>3}", pattern.len()), style);
         for (i, step) in steps.clone().enumerate() {
             let style = if self.current_line.is_some() && self.current_line.unwrap() == step {
                 Style::default().bg(Color::Blue).fg(Color::White)
@@ -267,33 +290,30 @@ impl<'a> StatefulWidget for &Editor<'a> {
             );
         }
 
-        let mut x = area.x + STEP_COLUMN_WIDTH as u16;
-        let mut render_track = |track: &TrackView, idx: usize| {
-            let mut borders = Borders::RIGHT | Borders::BOTTOM;
-            let mut width = COLUMN_WIDTH + 1; // add one for border
-            if idx == 0 {
-                // leftmost border is part of first track width
-                width += 1;
-                borders |= Borders::LEFT;
-            }
+        let mut x = area.x + STEPS_WIDTH as u16;
+        let mut render_track = |x: u16, width: u16, track: &TrackView| {
+            let mut borders = Borders::RIGHT | Borders::BOTTOM | Borders::LEFT;
 
             // Draw pattern
             let area = Rect {
                 x,
                 y: area.y,
-                width: width as u16,
-                height: (last_line - state.offset + 2) as u16,
+                width,
+                height: (last_line - state.line_offset + 2) as u16,
             };
             let block = Block::default().borders(borders);
             let inner = block.inner(area);
             block.render(area, buf);
-            self.render_track_steps(inner, buf, track, idx, &steps);
+            self.render_track_header(inner, buf, track);
+            if !track.is_master {
+                self.render_track_steps(inner, buf, track, &steps);
+            }
 
             // Draw mixer channel
             let area = Rect {
                 x,
                 y: mixer_area.y,
-                width: width as u16,
+                width,
                 height: mixer_area.height,
             };
             borders |= Borders::TOP;
@@ -301,18 +321,29 @@ impl<'a> StatefulWidget for &Editor<'a> {
             let inner = block.inner(area);
             block.render(area, buf);
             self.render_mixer_controls(track, inner, buf);
-
-            x += width as u16;
         };
 
-        for (i, track) in self.ctx.iter_tracks().enumerate() {
-            render_track(&track, i);
+        for (_, track) in self
+            .ctx
+            .iter_tracks()
+            .filter(|t| !t.is_master)
+            .enumerate()
+            .filter(|(i, _)| *i >= state.track_offset && *i < state.track_offset + num_tracks)
+        {
+            render_track(x, TRACK_WIDTH, &track);
+            x += TRACK_WIDTH;
         }
+
+        // Master track sticks to the right of the editor area
+        let master_track = self.ctx.master_track();
+        let x = area.x + (area.width - MASTER_TRACK_WIDTH);
+        render_track(x, MASTER_TRACK_WIDTH, &master_track);
     }
 }
 
-const COLUMN_WIDTH: usize = " C#4 05 ".len();
-const STEP_COLUMN_WIDTH: usize = " 256 ".len();
+const TRACK_WIDTH: u16 = "| C#4 05 v 20 R-10 |".len() as u16;
+const MASTER_TRACK_WIDTH: u16 = 12;
+const STEPS_WIDTH: u16 = " 256 ".len() as u16;
 
 lazy_static! {
     static ref NOTE_NAMES: Vec<String> = {

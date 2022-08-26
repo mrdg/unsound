@@ -4,7 +4,6 @@ use std::time::Duration;
 
 use crate::app::{Msg, SharedState, ViewContext};
 pub use crate::input::{Input, InputQueue};
-use crate::pattern::InputType;
 use crate::pattern::Position;
 use crate::pattern::StepSize;
 pub use crate::view::editor::{Editor, EditorState};
@@ -125,10 +124,7 @@ impl View {
         self.render_patterns(f, ctx, area);
 
         // Editor
-        let title = format!(" Pattern {} ", ctx.selected_pattern_index());
-        let block = Block::default()
-            .borders(Borders::TOP | Borders::BOTTOM)
-            .title(title);
+        let block = Block::default().borders(Borders::TOP | Borders::BOTTOM);
         let area = block.inner(sections[1]);
         f.render_widget(block, sections[1]);
 
@@ -443,11 +439,16 @@ impl View {
         match self.focus {
             Focus::Editor => match key {
                 Key::Alt('m') => return Ok(ToggleMute(self.cursor.pos.track())),
+                Key::Alt('=') => return Ok(VolumeInc(Some(self.cursor.pos.track()))),
+                Key::Alt('-') => return Ok(VolumeDec(Some(self.cursor.pos.track()))),
                 Key::Char(' ') => return Ok(TogglePlay),
                 Key::Backspace => {
-                    let change = DeleteNoteValue(self.cursor.pos);
-                    self.cursor.down();
-                    return Ok(change);
+                    let step = ctx.update_step(self.cursor.pos, |mut s| s.clear());
+                    let msg = SetPatternStep(self.cursor.pos, step);
+                    if self.cursor.pos.is_pitch_input() {
+                        self.cursor.down();
+                    }
+                    return Ok(msg);
                 }
                 Key::Ctrl('n') | Key::Down => self.cursor.down(),
                 Key::Ctrl('p') | Key::Up => self.cursor.up(),
@@ -457,23 +458,38 @@ impl View {
                 Key::Ctrl('e') | Key::End => self.cursor.end(),
                 Key::Ctrl('d') => return Ok(NextPattern),
                 Key::Ctrl('u') => return Ok(PrevPattern),
-                Key::Char('=') => return Ok(VolumeInc(Some(self.cursor.pos.track()))),
-                Key::Char('-') => return Ok(VolumeDec(Some(self.cursor.pos.track()))),
-                Key::Char('[') => return Ok(PatternInc(self.cursor.pos, StepSize::Default)),
-                Key::Char(']') => return Ok(PatternDec(self.cursor.pos, StepSize::Default)),
-                Key::Char('{') => return Ok(PatternInc(self.cursor.pos, StepSize::Large)),
-                Key::Char('}') => return Ok(PatternDec(self.cursor.pos, StepSize::Large)),
-                Key::Char('a') => return Ok(SetNoteOff(self.cursor.pos)),
-                Key::Char(key) => match self.cursor.pos.input_type() {
-                    InputType::Pitch => {
-                        if let Some(change) = set_pitch(self.cursor.pos, key) {
-                            self.cursor.down();
-                            return Ok(change);
-                        }
-                        return Ok(Noop);
+                Key::Char('[') => {
+                    return Ok(SetPatternStep(
+                        self.cursor.pos,
+                        ctx.update_step(self.cursor.pos, |mut s| s.next(StepSize::Default)),
+                    ))
+                }
+                Key::Char(']') => {
+                    return Ok(SetPatternStep(
+                        self.cursor.pos,
+                        ctx.update_step(self.cursor.pos, |mut s| s.prev(StepSize::Default)),
+                    ))
+                }
+                Key::Char('{') => {
+                    return Ok(SetPatternStep(
+                        self.cursor.pos,
+                        ctx.update_step(self.cursor.pos, |mut s| s.next(StepSize::Large)),
+                    ))
+                }
+                Key::Char('}') => {
+                    return Ok(SetPatternStep(
+                        self.cursor.pos,
+                        ctx.update_step(self.cursor.pos, |mut s| s.prev(StepSize::Large)),
+                    ))
+                }
+                Key::Char(key) => {
+                    let step = ctx.update_step(self.cursor.pos, |mut s| s.keypress(ctx, key));
+                    let msg = SetPatternStep(self.cursor.pos, step);
+                    if self.cursor.pos.is_pitch_input() {
+                        self.cursor.down()
                     }
-                    InputType::Sound => return Ok(set_sound(self.cursor.pos, key)),
-                },
+                    return Ok(msg);
+                }
                 _ => {}
             },
             Focus::CommandLine => {}
@@ -649,33 +665,6 @@ enum ProjectTreeState {
     Tracks,
     Devices(usize),
     DeviceParams(usize, usize),
-}
-
-fn set_sound(pos: Position, key: char) -> Msg {
-    if let Some(num) = key.to_digit(10) {
-        Msg::SetSound(pos, num as i32)
-    } else {
-        Msg::Noop
-    }
-}
-
-fn set_pitch(pos: Position, key: char) -> Option<Msg> {
-    let pitch = match key {
-        'z' => 0,
-        's' => 1,
-        'x' => 2,
-        'd' => 3,
-        'c' => 4,
-        'v' => 5,
-        'g' => 6,
-        'b' => 7,
-        'h' => 8,
-        'n' => 9,
-        'j' => 10,
-        'm' => 11,
-        _ => return None,
-    };
-    Some(Msg::SetPitch(pos, pitch as u8))
 }
 
 struct StatusLine {

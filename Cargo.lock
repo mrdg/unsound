@@ -680,6 +680,7 @@ dependencies = [
  "cpal",
  "hound",
  "lazy_static",
+ "num-traits",
  "rand",
  "ringbuf",
  "termion",

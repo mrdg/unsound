@@ -62,10 +62,6 @@ fn run() -> Result<()> {
     let engine = Engine::new(engine_state, engine_input, consumer);
     let mut app = App::new(app_state, app_input, engine_output, producer)?;
 
-    for _ in 0..8 {
-        app.send(Msg::CreatePattern(None))?
-    }
-
     let num_tracks = INSTRUMENT_TRACKS;
 
     // Load some default sounds for easier testing
@@ -84,6 +80,9 @@ fn run() -> Result<()> {
         }
     }
     app.send(Msg::CreateTrack(num_tracks, TrackType::Master))?;
+    for _ in 0..8 {
+        app.send(Msg::CreatePattern(None))?
+    }
     app.update_state();
 
     let stream = run_audio(app_output, engine)?;
