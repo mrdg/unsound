@@ -78,21 +78,24 @@ impl Pattern {
         self.tracks[pos.track()].steps[pos.line] = step;
     }
 
-    pub fn iter_notes(&self, tick: u64) -> impl Iterator<Item = NoteEvent> + '_ {
+    pub fn notes(&self, tick: u64) -> impl Iterator<Item = NoteEvent> + '_ {
         let line = (tick % self.len() as u64) as usize;
         self.tracks.iter().enumerate().flat_map(move |(i, track)| {
             track
                 .steps
                 .iter()
                 .enumerate()
-                .filter(move |(l, step)| *l == line && step.pitch.is_some())
-                .map(move |(_, &step)| NoteEvent {
-                    pitch: step.pitch.unwrap(),
-                    track: i as u8,
-                    sound: step.sound.unwrap_or(i as u8),
-                    fx1: step.effect1,
-                    fx2: step.effect2,
+                .filter(move |(l, _)| *l == line)
+                .map(move |(_, &step)| {
+                    step.pitch.map(|pitch| NoteEvent {
+                        pitch,
+                        track: i as u8,
+                        sound: step.sound.unwrap_or(i as u8),
+                        fx1: step.effect1,
+                        fx2: step.effect2,
+                    })
                 })
+                .flatten()
         })
     }
 }

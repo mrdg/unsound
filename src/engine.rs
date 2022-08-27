@@ -169,7 +169,7 @@ impl Engine {
                     ctx.pattern(curr_pattern).unwrap()
                 });
 
-                for note in pattern.iter_notes(self.state.current_tick as u64) {
+                for note in pattern.notes(self.state.current_tick as u64) {
                     if ctx.is_track_muted(note.track as usize) {
                         // TODO: trigger fade out for muted channels so sounds with long
                         // release don't keep playing
