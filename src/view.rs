@@ -219,13 +219,14 @@ impl View {
         match self.project_tree_state {
             ProjectTreeState::Tracks => {
                 let tracks: Vec<ListItem> = ctx
-                    .iter_tracks()
+                    .tracks()
+                    .iter()
                     .enumerate()
                     .map(|(i, track)| {
                         ListItem::new(Span::raw(format!(
                             "  {:0width$} {}",
                             i,
-                            track.name.unwrap_or("-"),
+                            track.name.as_ref().map_or("-", |n| n.as_str()),
                             width = 2
                         )))
                     })
