@@ -453,6 +453,10 @@ pub trait SharedState {
         &self.app().sounds
     }
 
+    fn tracks(&self) -> &Vec<Track> {
+        &self.app().tracks
+    }
+
     fn pattern(&self, idx: usize) -> Option<&Arc<Pattern>> {
         self.app()
             .song
@@ -505,10 +509,6 @@ impl<'a> ViewContext<'a> {
         self.song()
             .iter()
             .map(move |id| self.app().patterns.get(id).unwrap())
-    }
-
-    pub fn tracks(&self) -> &Vec<Track> {
-        &self.app_state.tracks
     }
 
     pub fn octave(&self) -> u16 {
@@ -609,10 +609,6 @@ pub struct AudioContext<'a> {
 impl<'a> AudioContext<'a> {
     pub fn new(app_state: &'a AppState) -> Self {
         Self { app_state }
-    }
-
-    pub fn tracks(&self) -> &Vec<Track> {
-        &self.app_state.tracks
     }
 
     pub fn device(&self, track_idx: usize, device_idx: usize) -> &Device {
