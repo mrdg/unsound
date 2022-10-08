@@ -508,8 +508,8 @@ impl View {
             Focus::ProjectTree => return self.handle_project_tree_input(key, ctx),
             Focus::FileLoader => {
                 match key {
-                    Key::Ctrl('u') => self.sounds.next(),
-                    Key::Ctrl('d') => self.sounds.prev(),
+                    Key::Ctrl('u') => self.sounds.prev(),
+                    Key::Ctrl('d') => self.sounds.next(),
                     Key::Char('u') => {
                         if let Some(dir) = ctx.file_browser.dir.parent() {
                             self.files = List::default();
