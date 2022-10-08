@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Result};
+use atomic_float::AtomicF32;
 use camino::Utf8PathBuf;
 use ringbuf::{Producer, RingBuffer};
 use triple_buffer::{Input, Output, TripleBuffer};
@@ -17,24 +18,27 @@ use std::sync::Arc;
 use std::fmt;
 use std::fmt::Display;
 use std::fmt::Formatter;
+use std::sync::atomic::Ordering;
 
 pub struct App {
-    pub state: AppState,
+    state: AppState,
     state_buf: Input<AppState>,
-    pub engine_state_buf: Output<EngineState>,
+    engine_state_buf: Output<EngineState>,
     producer: Producer<EngineCommand>,
-    pub file_browser: FileBrowser,
+    file_browser: FileBrowser,
     file_cache: HashMap<Utf8PathBuf, Arc<AudioFile>>,
     id_generator: IdGenerator,
-    track_rms: HashMap<TrackID, Output<Stereo>>,
-    pub device_params: HashMap<DeviceID, Arc<dyn Params>>,
+    device_params: HashMap<DeviceID, Arc<dyn Params>>,
 }
 
 impl App {
-    pub fn update_state(&mut self) {
-        self.engine_state_buf.update();
-        for track in &mut self.state.tracks {
-            track.rms = *self.track_rms.get_mut(&track.id).unwrap().read();
+    pub fn view_context(&mut self) -> ViewContext {
+        let engine_state = self.engine_state_buf.read();
+        ViewContext {
+            device_params: &self.device_params,
+            app_state: &self.state,
+            engine_state,
+            file_browser: &self.file_browser,
         }
     }
 
@@ -178,11 +182,7 @@ impl App {
 
     fn create_track(&mut self, track_type: TrackType) -> Result<Track> {
         let track_id = self.id_generator.track();
-        let rms = Stereo::ZERO;
-        let (input, output) = TripleBuffer::new(&rms).split();
-        self.track_rms.insert(track_id, output);
-
-        let cmd = EngineCommand::CreateTrack(track_id, Box::new(engine::Track::new(input)));
+        let cmd = EngineCommand::CreateTrack(track_id, Box::new(engine::Track::new()));
         self.send_to_engine(cmd)?;
 
         let mut devices = Vec::new();
@@ -207,7 +207,7 @@ impl App {
             track_type,
             volume: Volume::new(-6.0),
             name: None,
-            rms: Stereo::ZERO,
+            rms: [Arc::new(AtomicF32::new(0.0)), Arc::new(AtomicF32::new(0.0))],
         };
         Ok(track)
     }
@@ -303,7 +303,21 @@ pub struct Track {
     pub name: Option<String>,
     volume: Volume,
     muted: bool,
-    rms: Stereo,
+    rms: [Arc<AtomicF32>; 2],
+}
+
+impl Track {
+    fn rms(&self) -> (f32, f32) {
+        (
+            self.rms[0].load(Ordering::Relaxed),
+            self.rms[1].load(Ordering::Relaxed),
+        )
+    }
+
+    pub fn update_rms(&self, rms: Stereo) {
+        self.rms[0].store(rms.channel(0), Ordering::Relaxed);
+        self.rms[1].store(rms.channel(1), Ordering::Relaxed);
+    }
 }
 
 #[derive(Clone)]
@@ -350,7 +364,6 @@ pub fn new() -> Result<(App, Output<AppState>, Engine)> {
         file_browser: FileBrowser::with_path("./sounds")?,
         file_cache: HashMap::new(),
         id_generator: IdGenerator { current: 0 },
-        track_rms: HashMap::new(),
         device_params: HashMap::new(),
     };
     let mut master_bus = app.create_track(TrackType::Bus)?;
@@ -420,9 +433,9 @@ pub trait SharedState {
 
 #[derive(Copy, Clone)]
 pub struct ViewContext<'a> {
-    pub device_params: &'a HashMap<DeviceID, Arc<dyn Params>>,
-    pub app_state: &'a AppState,
-    pub engine_state: &'a EngineState,
+    device_params: &'a HashMap<DeviceID, Arc<dyn Params>>,
+    app_state: &'a AppState,
+    engine_state: &'a EngineState,
     pub file_browser: &'a FileBrowser,
 }
 
@@ -528,8 +541,7 @@ impl TrackView<'_> {
     }
 
     pub fn rms(&self) -> (f32, f32) {
-        let rms = self.track.rms;
-        (rms.channel(0), rms.channel(1))
+        self.track.rms()
     }
 
     pub fn is_muted(&self) -> bool {

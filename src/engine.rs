@@ -33,15 +33,13 @@ pub trait Device {
 pub struct Track {
     devices: HashMap<DeviceID, Box<dyn Device + Send>>,
     rms: Rms,
-    rms_buf: Input<Stereo>,
 }
 
 impl Track {
-    pub fn new(rms_buf: Input<Stereo>) -> Self {
+    pub fn new() -> Self {
         Self {
             rms: Rms::new(RMS_WINDOW_SIZE),
             devices: HashMap::with_capacity(MAX_TRACK_EFFECTS),
-            rms_buf,
         }
     }
 }
@@ -119,7 +117,7 @@ impl Engine {
 
         for track in ctx.tracks().iter() {
             let track_data = self.tracks.get_mut(&track.id).unwrap();
-            track_data.rms_buf.write(amp_to_db(track_data.rms.value()));
+            track.update_rms(amp_to_db(track_data.rms.value()));
         }
 
         let buf = self.state_buf.input_buffer();

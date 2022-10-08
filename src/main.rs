@@ -15,7 +15,7 @@ mod sampler;
 mod view;
 
 use anyhow::{anyhow, Result};
-use app::{Msg, TrackType, ViewContext};
+use app::{Msg, TrackType};
 use assert_no_alloc::*;
 use audio::Stereo;
 use camino::Utf8PathBuf;
@@ -76,7 +76,6 @@ fn run() -> Result<()> {
     for _ in 0..8 {
         app.send(Msg::CreatePattern(None))?
     }
-    app.update_state();
 
     let stream = run_audio(app_state, engine)?;
     stream.play()?;
@@ -127,13 +126,7 @@ fn run_app(mut app: App) -> Result<()> {
 
     let mut view = View::new();
     loop {
-        app.update_state();
-        let ctx = ViewContext {
-            device_params: &app.device_params,
-            app_state: &app.state,
-            engine_state: app.engine_state_buf.output_buffer(),
-            file_browser: &app.file_browser,
-        };
+        let ctx = app.view_context();
         terminal.draw(|f| view.render(f, ctx))?;
 
         match input.next()? {
