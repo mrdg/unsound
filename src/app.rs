@@ -593,7 +593,7 @@ impl<'a> AudioContext<'a> {
     }
 
     pub fn sound(&self, idx: usize) -> &Option<Sound> {
-        self.sounds().get(idx).unwrap()
+        self.sounds().get(idx).unwrap_or(&None)
     }
 
     pub fn pattern(&self, idx: usize) -> Option<&Arc<Pattern>> {
