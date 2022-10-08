@@ -37,6 +37,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "55ca83137a482d61d916ceb1eba52a684f98004f18e0cafea230fe5579c178a3"
 
 [[package]]
+name = "atomic_float"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "62af46d040ba9df09edc6528dae9d8e49f5f3e82f55b7d2ec31a733c38dbc49d"
+
+[[package]]
 name = "autocfg"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -526,6 +532,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "param_derive"
+version = "0.1.0"
+dependencies = [
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "parking_lot"
 version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -676,11 +690,13 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "assert_no_alloc",
+ "atomic_float",
  "camino",
  "cpal",
  "hound",
  "lazy_static",
  "num-traits",
+ "param_derive",
  "rand",
  "ringbuf",
  "termion",

@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::vec;
 
 use ringbuf::Consumer;
@@ -24,39 +25,9 @@ pub enum EngineCommand {
 }
 
 pub trait Device {
-    fn render(&mut self, ctx: DeviceContext, buffer: &mut [Stereo]);
-    fn send_event(&mut self, _ctx: DeviceContext, _event: &NoteEvent) {}
-}
-
-#[derive(Copy, Clone)]
-pub struct DeviceContext<'a> {
-    sounds: &'a Vec<Option<Sound>>,
-    params: &'a Params,
-}
-
-impl<'a> DeviceContext<'a> {
-    fn new(track_idx: usize, device_idx: usize, ctx: &'a AudioContext) -> Self {
-        let device = ctx.device(track_idx, device_idx);
-        Self {
-            sounds: ctx.sounds(),
-            params: &device.params,
-        }
-    }
-
-    fn for_preview(ctx: &'a AudioContext, params: &'a Params) -> Self {
-        Self {
-            sounds: ctx.sounds(),
-            params,
-        }
-    }
-
-    pub fn sound(&self, idx: usize) -> &Option<Sound> {
-        self.sounds.get(idx).unwrap_or(&None)
-    }
-
-    pub fn params(&self) -> &Params {
-        self.params
-    }
+    fn render(&mut self, ctx: AudioContext, buffer: &mut [Stereo]);
+    fn send_event(&mut self, _ctx: AudioContext, _event: &NoteEvent) {}
+    fn params(&self) -> Arc<dyn Params>;
 }
 
 pub struct Track {
@@ -82,7 +53,6 @@ pub struct Engine {
     track_buf: Buffer,
     sum_buf: Buffer,
     preview: Sampler,
-    preview_params: Params,
     consumer: Consumer<EngineCommand>,
     samples_to_tick: usize,
 }
@@ -94,9 +64,7 @@ impl Engine {
         consumer: Consumer<EngineCommand>,
     ) -> Engine {
         let tracks = HashMap::with_capacity(TOTAL_TRACKS);
-
-        let params = Sampler::params();
-        let preview = Sampler::new(&params);
+        let preview = Sampler::new();
 
         Self {
             tracks,
@@ -105,7 +73,6 @@ impl Engine {
             track_buf: vec![Stereo::ZERO; INTERNAL_BUFFER_SIZE],
             sum_buf: vec![Stereo::ZERO; INTERNAL_BUFFER_SIZE],
             preview,
-            preview_params: params,
             consumer,
             samples_to_tick: 0,
         }
@@ -124,10 +91,9 @@ impl Engine {
                 .enumerate()
             {
                 let track = self.tracks.get_mut(&track_info.id).unwrap();
-                for (j, device) in track_info.devices.iter().enumerate() {
-                    let device_ctx = DeviceContext::new(i, j, &ctx);
+                for device in track_info.devices.iter() {
                     let device = track.devices.get_mut(&device.id).unwrap();
-                    device.render(device_ctx, &mut self.track_buf[..block_size]);
+                    device.render(ctx, &mut self.track_buf[..block_size]);
                 }
 
                 // TODO: measure rms after volume fader
@@ -147,7 +113,6 @@ impl Engine {
                 self.sum_buf[i] = Stereo::ZERO;
             }
 
-            let ctx = DeviceContext::for_preview(&ctx, &self.preview_params);
             self.preview.render(ctx, &mut buffer[..block_size]);
             buffer = &mut buffer[block_size..];
         }
@@ -182,8 +147,7 @@ impl Engine {
                     }
                     let track_id = ctx.tracks()[note.track as usize].id;
                     let track = self.tracks.get_mut(&track_id).unwrap();
-                    for (i, device) in &mut track.devices.values_mut().enumerate() {
-                        let ctx = DeviceContext::new(note.track as usize, i, &ctx);
+                    for device in &mut track.devices.values_mut() {
                         device.send_event(ctx, &note);
                     }
                 }
@@ -213,7 +177,6 @@ impl Engine {
         while let Some(cmd) = self.consumer.pop() {
             match cmd {
                 EngineCommand::PreviewSound(snd) => {
-                    let ctx = DeviceContext::for_preview(&ctx, &self.preview_params);
                     self.preview
                         .note_on(&snd, ctx, ROOT_PITCH, DEFAULT_VELOCITY);
                 }

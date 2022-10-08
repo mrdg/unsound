@@ -129,6 +129,7 @@ fn run_app(mut app: App) -> Result<()> {
     loop {
         app.update_state();
         let ctx = ViewContext {
+            device_params: &app.device_params,
             app_state: &app.state,
             engine_state: app.engine_state_buf.output_buffer(),
             file_browser: &app.file_browser,

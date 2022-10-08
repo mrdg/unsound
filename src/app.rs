@@ -4,7 +4,7 @@ use ringbuf::{Producer, RingBuffer};
 use triple_buffer::{Input, Output, TripleBuffer};
 
 use crate::audio::Stereo;
-use crate::engine::{self, Engine, INSTRUMENT_TRACKS};
+use crate::engine::{self, Device as AudioDevice, Engine, INSTRUMENT_TRACKS};
 use crate::files::FileBrowser;
 use crate::params::Params;
 use crate::pattern::{self, Position, Step, StepSize, MAX_PATTERNS};
@@ -27,6 +27,7 @@ pub struct App {
     file_cache: HashMap<Utf8PathBuf, Arc<AudioFile>>,
     id_generator: IdGenerator,
     track_rms: HashMap<TrackID, Output<Stereo>>,
+    pub device_params: HashMap<DeviceID, Arc<dyn Params>>,
 }
 
 impl App {
@@ -38,14 +39,14 @@ impl App {
     }
 
     pub fn send(&mut self, msg: Msg) -> Result<()> {
-        self.handle_message(msg)?;
+        self.dispatch(msg)?;
         let input_buf = self.state_buf.input_buffer();
         input_buf.clone_from(&self.state);
         self.state_buf.publish();
         Ok(())
     }
 
-    fn handle_message(&mut self, msg: Msg) -> Result<()> {
+    fn dispatch(&mut self, msg: Msg) -> Result<()> {
         use Msg::*;
         match msg {
             Noop => {}
@@ -161,14 +162,14 @@ impl App {
                 self.state.tracks.insert(idx, track);
             }
             ParamInc(track_idx, device_idx, param_idx, step_size) => {
-                self.state.tracks[track_idx].devices[device_idx]
-                    .params
-                    .incr(param_idx, step_size);
+                let device_id = self.state.tracks[track_idx].devices[device_idx].id;
+                let params = self.device_params.get(&device_id).unwrap();
+                params.get_param(param_idx).incr(step_size);
             }
             ParamDec(track_idx, device_idx, param_idx, step_size) => {
-                self.state.tracks[track_idx].devices[device_idx]
-                    .params
-                    .decr(param_idx, step_size);
+                let device_id = self.state.tracks[track_idx].devices[device_idx].id;
+                let params = self.device_params.get(&device_id).unwrap();
+                params.get_param(param_idx).decr(step_size);
             }
         }
 
@@ -186,15 +187,15 @@ impl App {
 
         let mut devices = Vec::new();
         if matches!(track_type, TrackType::Instrument) {
-            let params = Sampler::params();
-            let sampler = Box::new(Sampler::new(&params));
+            let sampler = Box::new(Sampler::new());
+            let params = sampler.params();
             let sampler_id = self.id_generator.device();
+            self.device_params.insert(sampler_id.clone(), params);
             self.send_to_engine(EngineCommand::CreateDevice(track_id, sampler_id, sampler))?;
 
             let sampler = Device {
                 name: "Sampler".to_owned(),
                 id: sampler_id,
-                params,
             };
             devices = vec![sampler];
         }
@@ -297,6 +298,7 @@ pub struct AppState {
 pub struct Track {
     pub id: TrackID,
     pub devices: Vec<Device>,
+
     pub track_type: TrackType,
     pub name: Option<String>,
     volume: Volume,
@@ -308,7 +310,6 @@ pub struct Track {
 pub struct Device {
     pub id: DeviceID,
     pub name: String,
-    pub params: Params,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -318,15 +319,6 @@ pub enum TrackType {
 }
 
 pub fn new() -> Result<(App, Output<AppState>, Engine)> {
-    let mut sounds = Vec::with_capacity(INSTRUMENT_TRACKS);
-    for _ in 0..sounds.capacity() {
-        sounds.push(None);
-    }
-
-    let tracks = Vec::new();
-    let patterns = HashMap::new();
-    let song = Vec::new();
-
     let engine_state = EngineState {
         current_pattern: 0,
         current_tick: 0,
@@ -337,12 +329,12 @@ pub fn new() -> Result<(App, Output<AppState>, Engine)> {
         lines_per_beat: 4,
         octave: 4,
         is_playing: false,
-        patterns,
-        song,
+        patterns: HashMap::new(),
+        song: Vec::new(),
         selected_pattern: 0,
         loop_range: Some((0, 0)),
-        sounds,
-        tracks,
+        sounds: vec![None; INSTRUMENT_TRACKS],
+        tracks: Vec::new(),
     };
 
     let (app_state_input, app_state_output) = TripleBuffer::new(&app_state).split();
@@ -359,6 +351,7 @@ pub fn new() -> Result<(App, Output<AppState>, Engine)> {
         file_cache: HashMap::new(),
         id_generator: IdGenerator { current: 0 },
         track_rms: HashMap::new(),
+        device_params: HashMap::new(),
     };
     let mut master_bus = app.create_track(TrackType::Bus)?;
     master_bus.name = Some("Master".to_owned());
@@ -423,43 +416,11 @@ pub trait SharedState {
     fn tracks(&self) -> &Vec<Track> {
         &self.app().tracks
     }
-
-    fn pattern(&self, idx: usize) -> Option<&Arc<Pattern>> {
-        self.app()
-            .song
-            .get(idx)
-            .and_then(|id| self.app().patterns.get(id))
-    }
-
-    fn selected_pattern(&self) -> &Pattern {
-        let id = self.app().song[self.app().selected_pattern];
-        self.app().patterns.get(&id).unwrap()
-    }
-
-    fn selected_pattern_index(&self) -> usize {
-        self.app().selected_pattern
-    }
-
-    fn song(&self) -> &Vec<PatternID> {
-        &self.app().song
-    }
-
-    fn loop_contains(&self, idx: usize) -> bool {
-        if let Some(loop_range) = self.app().loop_range {
-            loop_range.0 <= idx && idx <= loop_range.1
-        } else {
-            false
-        }
-    }
-
-    fn params(&self, track_idx: usize, device_idx: usize) -> &Params {
-        let device = &self.app().tracks[track_idx].devices[device_idx];
-        &device.params
-    }
 }
 
 #[derive(Copy, Clone)]
 pub struct ViewContext<'a> {
+    pub device_params: &'a HashMap<DeviceID, Arc<dyn Params>>,
     pub app_state: &'a AppState,
     pub engine_state: &'a EngineState,
     pub file_browser: &'a FileBrowser,
@@ -472,6 +433,11 @@ impl<'a> SharedState for ViewContext<'a> {
 }
 
 impl<'a> ViewContext<'a> {
+    pub fn params(&self, track_idx: usize, device_idx: usize) -> &Arc<dyn Params> {
+        let device = &self.app().tracks[track_idx].devices[device_idx];
+        self.device_params.get(&device.id).unwrap()
+    }
+
     pub fn patterns(&self) -> impl Iterator<Item = &Arc<Pattern>> {
         self.song()
             .iter()
@@ -525,6 +491,27 @@ impl<'a> ViewContext<'a> {
         let steps = pattern.steps(track_idx);
         &steps[range.start..range.end]
     }
+
+    pub fn song(&self) -> &Vec<PatternID> {
+        &self.app().song
+    }
+
+    pub fn loop_contains(&self, idx: usize) -> bool {
+        if let Some(loop_range) = self.app().loop_range {
+            loop_range.0 <= idx && idx <= loop_range.1
+        } else {
+            false
+        }
+    }
+
+    pub fn selected_pattern(&self) -> &Pattern {
+        let id = self.app().song[self.app().selected_pattern];
+        self.app().patterns.get(&id).unwrap()
+    }
+
+    pub fn selected_pattern_index(&self) -> usize {
+        self.app().selected_pattern
+    }
 }
 
 pub struct TrackView<'a> {
@@ -568,10 +555,6 @@ impl<'a> AudioContext<'a> {
         Self { app_state }
     }
 
-    pub fn device(&self, track_idx: usize, device_idx: usize) -> &Device {
-        &self.app_state.tracks[track_idx].devices[device_idx]
-    }
-
     pub fn master_bus(&self) -> &Track {
         // the master track always exists so it's ok to unwrap here
         self.app_state.tracks.last().unwrap()
@@ -595,6 +578,17 @@ impl<'a> AudioContext<'a> {
 
     pub fn track_volume(&self, track: usize) -> f64 {
         self.app_state.tracks[track].volume.val()
+    }
+
+    pub fn sound(&self, idx: usize) -> &Option<Sound> {
+        self.sounds().get(idx).unwrap()
+    }
+
+    pub fn pattern(&self, idx: usize) -> Option<&Arc<Pattern>> {
+        self.app()
+            .song
+            .get(idx)
+            .and_then(|id| self.app().patterns.get(id))
     }
 }
 

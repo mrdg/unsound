@@ -1,12 +1,56 @@
+use crate::pattern::StepSize;
+
+use atomic_float::AtomicF64;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use crate::pattern::StepSize;
+pub trait Params {
+    fn get_param(&self, index: usize) -> &Param;
+    fn len(&self) -> usize;
+}
+
+pub struct Param {
+    value: AtomicF64,
+    info: ParamInfo,
+}
+
+impl Param {
+    pub fn new(value: f64, info: ParamInfo) -> Self {
+        Self {
+            value: AtomicF64::new(value),
+            info,
+        }
+    }
+    pub fn incr(&self, step_size: StepSize) {
+        let step = self.info.step(step_size);
+        let new = f64::min(self.info.max, self.value() + step);
+        self.value.store(new, Ordering::Relaxed);
+    }
+
+    pub fn decr(&self, step_size: StepSize) {
+        let step = self.info.step(step_size);
+        let new = f64::max(self.info.min, self.value() - step);
+        self.value.store(new, Ordering::Relaxed);
+    }
+
+    pub fn value_as_string(&self) -> String {
+        let fmt = self.info.format_value.unwrap_or(format_default);
+        fmt(self.value())
+    }
+
+    pub fn value(&self) -> f64 {
+        self.value.load(Ordering::Relaxed)
+    }
+
+    pub fn label(&self) -> &str {
+        self.info.name.as_str()
+    }
+}
 
 pub struct ParamInfo {
     name: String,
     min: f64,
     max: f64,
-    default: f64,
     steps: Option<[f64; 2]>,
     format_value: Option<FormatValue>,
 }
@@ -14,10 +58,9 @@ pub struct ParamInfo {
 impl ParamInfo {
     const DEFAULT_STEPS: [f64; 2] = [0.01, 0.1];
 
-    pub fn new<T: Into<f64>>(name: &str, default: T, min: T, max: T) -> Self {
+    pub fn new<T: Into<f64>>(name: &str, min: T, max: T) -> Self {
         Self {
             name: String::from(name),
-            default: default.into(),
             min: min.into(),
             max: max.into(),
             steps: None,
@@ -50,74 +93,33 @@ pub fn format_millis(v: f64) -> String {
     format!("{}ms", v)
 }
 
-#[derive(Clone)]
-pub struct Params {
-    values: Vec<f64>,
-    info: Arc<Vec<ParamInfo>>,
+pub struct ParamIter<'a> {
+    current: usize,
+    params: &'a Arc<dyn Params>,
 }
 
-impl Params {
-    pub fn value<I: Into<usize>>(&self, idx: I) -> f64 {
-        self.values[idx.into()]
-    }
-
-    pub fn incr(&mut self, idx: usize, step_size: StepSize) {
-        let info = &self.info[idx];
-        let step = info.step(step_size);
-        let v = &mut self.values[idx];
-        *v = f64::min(info.max, *v + step);
-    }
-
-    pub fn decr(&mut self, idx: usize, step_size: StepSize) {
-        let info = &self.info[idx];
-        let step = info.step(step_size);
-        let v = &mut self.values[idx];
-        *v = f64::max(info.min, *v - step);
-    }
-
-    pub fn len(&self) -> usize {
-        self.values.len()
-    }
-
-    pub fn iter(&self) -> impl Iterator<Item = LabeledParam> {
-        self.info.iter().enumerate().map(move |(i, info)| {
-            let f = info.format_value.unwrap_or(format_default);
-            LabeledParam {
-                label: &info.name,
-                value: f(self.values[i]),
-            }
-        })
-    }
-}
-
-pub struct ParamsBuilder {
-    values: Vec<f64>,
-    info: Vec<ParamInfo>,
-}
-
-impl ParamsBuilder {
-    pub fn new() -> Self {
-        Self {
-            values: Vec::new(),
-            info: Vec::new(),
-        }
-    }
-
-    pub fn insert<P: Into<usize>>(&mut self, param: P, info: ParamInfo) {
-        let idx = param.into();
-        self.values.insert(idx, info.default);
-        self.info.insert(idx, info);
-    }
-
-    pub fn build(self) -> Params {
-        Params {
-            values: self.values,
-            info: Arc::new(self.info),
+impl<'a> Iterator for ParamIter<'a> {
+    type Item = &'a Param;
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.current >= self.params.len() {
+            None
+        } else {
+            let idx = self.current;
+            self.current += 1;
+            Some(self.params.get_param(idx))
         }
     }
 }
 
-pub struct LabeledParam<'a> {
-    pub label: &'a String,
-    pub value: String,
+pub trait ParamIterExt {
+    fn iter(&self) -> ParamIter;
+}
+
+impl ParamIterExt for Arc<dyn Params> {
+    fn iter(&self) -> ParamIter {
+        ParamIter {
+            current: 0,
+            params: &self,
+        }
+    }
 }

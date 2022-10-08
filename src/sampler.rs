@@ -1,27 +1,60 @@
+use crate::app::AudioContext;
 use crate::audio::{Buffer, Frame, Stereo};
-use crate::engine::{Device, DeviceContext};
+use crate::engine::Device;
 use crate::env::{Envelope, State as EnvelopeState};
-use crate::params::{self, ParamInfo, Params, ParamsBuilder};
+use crate::params::{self, format_millis, Param, ParamInfo, Params};
 use crate::pattern::{Effect, NoteEvent, DEFAULT_VELOCITY, NOTE_OFF};
 use crate::SAMPLE_RATE;
 use anyhow::Result;
 use camino::Utf8PathBuf;
 use hound::WavReader;
+use param_derive::Params;
 use std::sync::Arc;
 
 pub const ROOT_PITCH: u8 = 48;
 
-#[derive(Clone)]
-enum SamplerParam {
-    EnvAttack = 0,
-    EnvDecay,
-    EnvSustain,
-    EnvRelease,
+#[derive(Params)]
+struct SamplerParams {
+    env_attack: Param,
+    env_decay: Param,
+    env_sustain: Param,
+    env_release: Param,
 }
 
-impl From<SamplerParam> for usize {
-    fn from(p: SamplerParam) -> usize {
-        p as usize
+impl SamplerParams {
+    fn adsr(&self) -> Adsr {
+        Adsr {
+            attack: self.env_attack.value(),
+            decay: self.env_decay.value(),
+            sustain: self.env_sustain.value(),
+            release: self.env_release.value(),
+        }
+    }
+}
+
+impl Default for SamplerParams {
+    fn default() -> Self {
+        Self {
+            env_attack: Param::new(
+                1.0,
+                ParamInfo::new("Envelope Attack", 1, 20_000)
+                    .with_steps([5, 100])
+                    .with_formatter(format_millis),
+            ),
+            env_decay: Param::new(
+                200.0,
+                ParamInfo::new("Envelope Decay", 5, 20_000)
+                    .with_steps([5, 100])
+                    .with_formatter(format_millis),
+            ),
+            env_sustain: Param::new(1.0, ParamInfo::new("Envelope Sustain", 0.01, 1.0)),
+            env_release: Param::new(
+                100.0,
+                ParamInfo::new("Envelope Release", 5, 20_000)
+                    .with_steps([5, 100])
+                    .with_formatter(format_millis),
+            ),
+        }
     }
 }
 
@@ -43,7 +76,7 @@ enum VoiceState {
 }
 
 impl<'a> Voice {
-    fn new(params: &Params) -> Self {
+    fn new(params: &SamplerParams) -> Self {
         let adsr = params.adsr();
         Self {
             position: 0.0,
@@ -114,51 +147,28 @@ pub fn load_file(path: &Utf8PathBuf) -> Result<AudioFile> {
 
 pub struct Sampler {
     voices: Vec<Voice>,
+    params: Arc<SamplerParams>,
 }
 
 impl Sampler {
-    pub fn params() -> Params {
-        let mut p = ParamsBuilder::new();
-        use SamplerParam::*;
-        p.insert(
-            EnvAttack,
-            ParamInfo::new("Envelope Attack", 1, 1, 20_000)
-                .with_steps([5, 100])
-                .with_formatter(params::format_millis),
-        );
-        p.insert(
-            EnvDecay,
-            ParamInfo::new("Envelope Decay", 200, 5, 20_000)
-                .with_steps([5, 100])
-                .with_formatter(params::format_millis),
-        );
-        p.insert(
-            EnvSustain,
-            ParamInfo::new("Envelope Sustain", 1.0, 0.01, 1.0),
-        );
-        p.insert(
-            EnvRelease,
-            ParamInfo::new("Envelope Release", 100, 5, 20_000)
-                .with_steps([5, 100])
-                .with_formatter(params::format_millis),
-        );
-        p.build()
-    }
-
-    pub fn new(params: &Params) -> Self {
+    pub fn new() -> Self {
         let mut voices = Vec::with_capacity(12);
+        let params = SamplerParams::default();
         for _ in 0..voices.capacity() {
-            voices.push(Voice::new(params));
+            voices.push(Voice::new(&params));
         }
-        Self { voices }
+        Self {
+            voices,
+            params: Arc::new(params),
+        }
     }
 
-    pub fn note_on(&mut self, sound: &Sound, ctx: DeviceContext, pitch: u8, velocity: u8) {
+    pub fn note_on(&mut self, sound: &Sound, _ctx: AudioContext, pitch: u8, velocity: u8) {
         if let Some(voice) = self.voices.iter_mut().find(|v| v.state == VoiceState::Free) {
             voice.gate = 1.0;
             voice.state = VoiceState::Busy;
 
-            let adsr = ctx.params().adsr();
+            let adsr = self.params.adsr();
             voice.env = Envelope::new(adsr.attack, adsr.decay, adsr.sustain, adsr.release);
 
             voice.pitch = pitch;
@@ -187,25 +197,13 @@ fn gain_factor(db: f32) -> f32 {
     f32::powf(10.0, db / 20.0)
 }
 
-trait SamplerConfig {
-    fn adsr(&self) -> Adsr;
-}
-
-impl<'a> SamplerConfig for Params {
-    fn adsr(&self) -> Adsr {
-        use SamplerParam::*;
-        Adsr {
-            attack: self.value(EnvAttack),
-            decay: self.value(EnvDecay),
-            sustain: self.value(EnvSustain),
-            release: self.value(EnvRelease),
-        }
-    }
-}
-
 impl Device for Sampler {
-    fn render(&mut self, ctx: DeviceContext, buffer: &mut [Stereo]) {
-        let adsr = ctx.params().adsr();
+    fn params(&self) -> Arc<dyn Params> {
+        self.params.clone()
+    }
+
+    fn render(&mut self, _ctx: AudioContext, buffer: &mut [Stereo]) {
+        let adsr = self.params.adsr();
         for voice in &mut self.voices {
             if voice.state == VoiceState::Free {
                 continue;
@@ -237,7 +235,7 @@ impl Device for Sampler {
         }
     }
 
-    fn send_event(&mut self, ctx: DeviceContext, event: &NoteEvent) {
+    fn send_event(&mut self, ctx: AudioContext, event: &NoteEvent) {
         let mut velocity: Option<u8> = None;
         let mut chord: [Option<u8>; 3] = [None; 3];
 

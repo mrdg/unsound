@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use crate::app::{Msg, SharedState, ViewContext};
 pub use crate::input::{Input, InputQueue};
+use crate::params::ParamIterExt;
 use crate::pattern::Position;
 use crate::pattern::StepSize;
 pub use crate::view::editor::{Editor, EditorState};
@@ -267,8 +268,8 @@ impl View {
                         ListItem::new(Span::raw(format!(
                             " {:0nwidth$} {:lwidth$} {}",
                             i,
-                            p.label,
-                            p.value,
+                            p.label(),
+                            p.value_as_string(),
                             nwidth = 2,
                             lwidth = w
                         )))
