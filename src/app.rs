@@ -1,19 +1,16 @@
 use anyhow::{anyhow, Result};
 use camino::Utf8PathBuf;
-use ringbuf::Producer;
+use ringbuf::{Producer, RingBuffer};
 use triple_buffer::{Input, Output, TripleBuffer};
 
 use crate::audio::Stereo;
-use crate::engine::{self, INSTRUMENT_TRACKS};
+use crate::engine::{self, Engine, INSTRUMENT_TRACKS};
 use crate::files::FileBrowser;
 use crate::params::Params;
 use crate::pattern::{self, Position, Step, StepSize, MAX_PATTERNS};
 use crate::sampler::{self, AudioFile, Sampler};
-use crate::view;
-use crate::view::{InputQueue, View};
 use crate::{engine::EngineCommand, pattern::Pattern, sampler::Sound};
 use std::collections::HashMap;
-use std::io;
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -21,85 +18,34 @@ use std::fmt;
 use std::fmt::Display;
 use std::fmt::Formatter;
 
-use termion::{input::MouseTerminal, raw::IntoRawMode, screen::AlternateScreen};
-use tui::{backend::TermionBackend, Terminal};
-
 pub struct App {
-    state: AppState,
+    pub state: AppState,
     state_buf: Input<AppState>,
-    engine_state_buf: Output<EngineState>,
+    pub engine_state_buf: Output<EngineState>,
     producer: Producer<EngineCommand>,
-    file_browser: FileBrowser,
+    pub file_browser: FileBrowser,
     file_cache: HashMap<Utf8PathBuf, Arc<AudioFile>>,
     id_generator: IdGenerator,
     track_rms: HashMap<TrackID, Output<Stereo>>,
 }
 
 impl App {
-    pub fn new(
-        state: AppState,
-        state_buf: Input<AppState>,
-        engine_state_buf: Output<EngineState>,
-        producer: Producer<EngineCommand>,
-    ) -> Result<Self> {
-        let app = Self {
-            state,
-            state_buf,
-            engine_state_buf,
-            producer,
-            file_browser: FileBrowser::with_path("./sounds")?,
-            file_cache: HashMap::new(),
-            id_generator: IdGenerator { current: 0 },
-            track_rms: HashMap::new(),
-        };
-        Ok(app)
-    }
-
-    pub fn run(&mut self) -> Result<()> {
-        let mut input = InputQueue::new();
-        let stdout = io::stdout().into_raw_mode()?;
-        let stdout = MouseTerminal::from(stdout);
-        let stdout = AlternateScreen::from(stdout);
-        let backend = TermionBackend::new(stdout);
-        let mut terminal = Terminal::new(backend)?;
-
-        // Update for setup messages that were sent in main
-        self.update_state();
-
-        let mut view = View::new();
-        loop {
-            self.engine_state_buf.update();
-            for track in &mut self.state.tracks {
-                track.rms = *self.track_rms.get_mut(&track.id).unwrap().read();
-            }
-            let ctx = ViewContext {
-                app_state: &self.state,
-                engine_state: self.engine_state_buf.output_buffer(),
-                file_browser: &self.file_browser,
-            };
-            terminal.draw(|f| view.render(f, ctx))?;
-
-            match input.next()? {
-                view::Input::Key(key) => {
-                    let msg = view.handle_input(key, ctx);
-                    if msg.is_exit() {
-                        return Ok(());
-                    }
-                    self.send(msg)?;
-                    self.update_state();
-                }
-                view::Input::Tick => {}
-            }
+    pub fn update_state(&mut self) {
+        self.engine_state_buf.update();
+        for track in &mut self.state.tracks {
+            track.rms = *self.track_rms.get_mut(&track.id).unwrap().read();
         }
     }
 
-    pub fn update_state(&mut self) {
+    pub fn send(&mut self, msg: Msg) -> Result<()> {
+        self.handle_message(msg)?;
         let input_buf = self.state_buf.input_buffer();
         input_buf.clone_from(&self.state);
         self.state_buf.publish();
+        Ok(())
     }
 
-    pub fn send(&mut self, msg: Msg) -> Result<()> {
+    fn handle_message(&mut self, msg: Msg) -> Result<()> {
         use Msg::*;
         match msg {
             Noop => {}
@@ -211,34 +157,7 @@ impl App {
             VolumeDec(track) => self.track_volume(track).dec(),
             SetVolume(track, value) => self.track_volume(track).set(value),
             CreateTrack(idx, track_type) => {
-                let track_id = self.id_generator.track();
-                let rms = Stereo::ZERO;
-                let (input, output) = TripleBuffer::new(&rms).split();
-                self.track_rms.insert(track_id, output);
-
-                let cmd = EngineCommand::CreateTrack(track_id, Box::new(engine::Track::new(input)));
-                self.send_to_engine(cmd)?;
-
-                let params = Sampler::params();
-                let sampler = Box::new(Sampler::new(&params));
-                let sampler_id = self.id_generator.device();
-                self.send_to_engine(EngineCommand::CreateDevice(track_id, sampler_id, sampler))?;
-
-                let sampler = Device {
-                    name: "Sampler".to_owned(),
-                    id: sampler_id,
-                    params,
-                };
-
-                let track = Track {
-                    id: track_id,
-                    devices: vec![sampler],
-                    muted: false,
-                    track_type,
-                    volume: Volume::new(-6.0),
-                    name: None,
-                    rms: Stereo::ZERO,
-                };
+                let track = self.create_track(track_type)?;
                 self.state.tracks.insert(idx, track);
             }
             ParamInc(track_idx, device_idx, param_idx, step_size) => {
@@ -254,6 +173,42 @@ impl App {
         }
 
         Ok(())
+    }
+
+    fn create_track(&mut self, track_type: TrackType) -> Result<Track> {
+        let track_id = self.id_generator.track();
+        let rms = Stereo::ZERO;
+        let (input, output) = TripleBuffer::new(&rms).split();
+        self.track_rms.insert(track_id, output);
+
+        let cmd = EngineCommand::CreateTrack(track_id, Box::new(engine::Track::new(input)));
+        self.send_to_engine(cmd)?;
+
+        let mut devices = Vec::new();
+        if matches!(track_type, TrackType::Instrument) {
+            let params = Sampler::params();
+            let sampler = Box::new(Sampler::new(&params));
+            let sampler_id = self.id_generator.device();
+            self.send_to_engine(EngineCommand::CreateDevice(track_id, sampler_id, sampler))?;
+
+            let sampler = Device {
+                name: "Sampler".to_owned(),
+                id: sampler_id,
+                params,
+            };
+            devices = vec![sampler];
+        }
+
+        let track = Track {
+            id: track_id,
+            devices,
+            muted: false,
+            track_type,
+            volume: Volume::new(-6.0),
+            name: None,
+            rms: Stereo::ZERO,
+        };
+        Ok(track)
     }
 
     fn track_volume(&mut self, track: Option<usize>) -> &mut Volume {
@@ -359,12 +314,10 @@ pub struct Device {
 #[derive(Copy, Clone, Debug)]
 pub enum TrackType {
     Instrument,
-    #[allow(unused)]
     Bus,
-    Master,
 }
 
-pub fn new() -> Result<(AppState, EngineState)> {
+pub fn new() -> Result<(App, Output<AppState>, Engine)> {
     let mut sounds = Vec::with_capacity(INSTRUMENT_TRACKS);
     for _ in 0..sounds.capacity() {
         sounds.push(None);
@@ -392,7 +345,25 @@ pub fn new() -> Result<(AppState, EngineState)> {
         tracks,
     };
 
-    Ok((app_state, engine_state))
+    let (app_state_input, app_state_output) = TripleBuffer::new(&app_state).split();
+    let (engine_state_input, engine_state_output) = TripleBuffer::new(&engine_state).split();
+    let (producer, consumer) = RingBuffer::<EngineCommand>::new(64).split();
+    let engine = Engine::new(engine_state, engine_state_input, consumer);
+
+    let mut app = App {
+        state: app_state,
+        state_buf: app_state_input,
+        engine_state_buf: engine_state_output,
+        producer,
+        file_browser: FileBrowser::with_path("./sounds")?,
+        file_cache: HashMap::new(),
+        id_generator: IdGenerator { current: 0 },
+        track_rms: HashMap::new(),
+    };
+    let mut master_bus = app.create_track(TrackType::Bus)?;
+    master_bus.name = Some("Master".to_owned());
+    app.state.tracks.push(master_bus);
+    Ok((app, app_state_output, engine))
 }
 
 pub enum Msg {
@@ -439,10 +410,6 @@ pub trait SharedState {
 
     fn bpm(&self) -> u16 {
         self.app().bpm
-    }
-
-    fn octave(&self) -> u16 {
-        self.app().octave
     }
 
     fn is_playing(&self) -> bool {
@@ -493,8 +460,8 @@ pub trait SharedState {
 
 #[derive(Copy, Clone)]
 pub struct ViewContext<'a> {
-    app_state: &'a AppState,
-    engine_state: &'a EngineState,
+    pub app_state: &'a AppState,
+    pub engine_state: &'a EngineState,
     pub file_browser: &'a FileBrowser,
 }
 
@@ -538,66 +505,56 @@ impl<'a> ViewContext<'a> {
         self.engine_state.current_pattern
     }
 
-    pub fn rms(&self, track: usize) -> (f32, f32) {
-        let rms = self.app_state.tracks[track].rms;
-        (rms.channel(0), rms.channel(1))
-    }
-
-    pub fn master_track(&self) -> TrackView {
-        let track = self.app_state.tracks.last().unwrap();
+    pub fn master_bus(&self) -> TrackView {
+        let track = self.tracks().last().unwrap();
         TrackView {
-            steps: None,
+            track,
             index: self.app_state.tracks.len() - 1,
-            muted: false,
-            volume: track.volume.db(),
-            is_master: true,
-            name: Some("Master"),
         }
     }
 
     pub fn iter_tracks(&self) -> impl Iterator<Item = TrackView> {
-        let pattern = self.selected_pattern();
-        self.app_state
-            .tracks
+        self.tracks()
             .iter()
             .enumerate()
-            .map(move |(i, track)| {
-                let steps = match track.track_type {
-                    TrackType::Instrument => Some(pattern.steps(i)),
-                    _ => None,
-                };
+            .map(|(i, track)| TrackView { track, index: i })
+    }
 
-                TrackView {
-                    steps,
-                    index: i,
-                    muted: track.muted,
-                    volume: track.volume.db(),
-                    is_master: matches!(track.track_type, TrackType::Master),
-                    name: track.name.as_deref(),
-                }
-            })
+    pub fn pattern_steps(&self, track_idx: usize, range: &Range<usize>) -> &[Step] {
+        let pattern = self.selected_pattern();
+        let steps = pattern.steps(track_idx);
+        &steps[range.start..range.end]
     }
 }
 
 pub struct TrackView<'a> {
-    pub steps: Option<&'a Vec<Step>>,
-    pub name: Option<&'a str>,
+    track: &'a Track,
     pub index: usize,
-    pub muted: bool,
-    pub volume: f64,
-    pub is_master: bool,
 }
 
 impl TrackView<'_> {
-    pub fn steps(&self, range: &Range<usize>) -> &[Step] {
-        self.steps
-            .map_or(&[], |steps| &steps[range.start..range.end])
+    pub fn name(&self) -> String {
+        self.track
+            .name
+            .clone() // TODO: prevent clone
+            .unwrap_or_else(|| self.index.to_string())
     }
 
-    pub fn name(&self) -> String {
-        self.name
-            .map(|s| s.to_owned())
-            .unwrap_or_else(|| self.index.to_string())
+    pub fn rms(&self) -> (f32, f32) {
+        let rms = self.track.rms;
+        (rms.channel(0), rms.channel(1))
+    }
+
+    pub fn is_muted(&self) -> bool {
+        self.track.muted
+    }
+
+    pub fn volume(&self) -> f64 {
+        self.track.volume.db()
+    }
+
+    pub fn is_bus(&self) -> bool {
+        matches!(self.track.track_type, TrackType::Bus)
     }
 }
 
@@ -615,14 +572,7 @@ impl<'a> AudioContext<'a> {
         &self.app_state.tracks[track_idx].devices[device_idx]
     }
 
-    pub fn instrument_tracks(&self) -> impl Iterator<Item = &Track> {
-        self.app_state
-            .tracks
-            .iter()
-            .filter(|t| matches!(t.track_type, TrackType::Instrument))
-    }
-
-    pub fn master_track(&self) -> &Track {
+    pub fn master_bus(&self) -> &Track {
         // the master track always exists so it's ok to unwrap here
         self.app_state.tracks.last().unwrap()
     }

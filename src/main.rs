@@ -15,19 +15,21 @@ mod sampler;
 mod view;
 
 use anyhow::{anyhow, Result};
-use app::{Msg, TrackType};
+use app::{Msg, TrackType, ViewContext};
 use assert_no_alloc::*;
 use audio::Stereo;
 use camino::Utf8PathBuf;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use engine::{Engine, INSTRUMENT_TRACKS};
-use ringbuf::RingBuffer;
-use triple_buffer::{Output, TripleBuffer};
+use triple_buffer::Output;
+use view::InputQueue;
 
-use crate::{
-    app::{App, AppState},
-    engine::EngineCommand,
-};
+use crate::view::View;
+use std::io;
+use termion::{input::MouseTerminal, raw::IntoRawMode, screen::AlternateScreen};
+use tui::{backend::TermionBackend, Terminal};
+
+use crate::app::{App, AppState};
 
 #[cfg(debug_assertions)]
 #[global_allocator]
@@ -52,15 +54,7 @@ fn main() {
 }
 
 fn run() -> Result<()> {
-    let (app_state, engine_state) = app::new()?;
-
-    let (app_input, app_output) = TripleBuffer::new(&app_state).split();
-    let (engine_input, engine_output) = TripleBuffer::new(&engine_state).split();
-
-    let (producer, consumer) = RingBuffer::<EngineCommand>::new(64).split();
-
-    let engine = Engine::new(engine_state, engine_input, consumer);
-    let mut app = App::new(app_state, app_input, engine_output, producer)?;
+    let (mut app, app_state, engine) = app::new()?;
 
     let num_tracks = INSTRUMENT_TRACKS;
 
@@ -79,19 +73,18 @@ fn run() -> Result<()> {
             app.send(Msg::LoadSound(i, Utf8PathBuf::from(sounds[i])))?;
         }
     }
-    app.send(Msg::CreateTrack(num_tracks, TrackType::Master))?;
     for _ in 0..8 {
         app.send(Msg::CreatePattern(None))?
     }
     app.update_state();
 
-    let stream = run_audio(app_output, engine)?;
+    let stream = run_audio(app_state, engine)?;
     stream.play()?;
 
-    app.run()
+    run_app(app)
 }
 
-fn run_audio(mut app_state_buf: Output<AppState>, mut engine: Engine) -> Result<cpal::Stream> {
+fn run_audio(mut app_state: Output<AppState>, mut engine: Engine) -> Result<cpal::Stream> {
     let host = cpal::default_host();
     let device = host
         .default_output_device()
@@ -108,7 +101,7 @@ fn run_audio(mut app_state_buf: Output<AppState>, mut engine: Engine) -> Result<
         move |output: &mut [f32], _: &cpal::OutputCallbackInfo| {
             assert_no_alloc(|| {
                 let buf_size = output.len() / 2;
-                engine.render(app_state_buf.read(), &mut buf[..buf_size]);
+                engine.render(app_state.read(), &mut buf[..buf_size]);
                 let mut i = 0;
                 for frame in &mut buf[..buf_size] {
                     output[i] = frame.channel(0);
@@ -122,4 +115,35 @@ fn run_audio(mut app_state_buf: Output<AppState>, mut engine: Engine) -> Result<
     )?;
 
     Ok(stream)
+}
+
+fn run_app(mut app: App) -> Result<()> {
+    let mut input = InputQueue::new();
+    let stdout = io::stdout().into_raw_mode()?;
+    let stdout = MouseTerminal::from(stdout);
+    let stdout = AlternateScreen::from(stdout);
+    let backend = TermionBackend::new(stdout);
+    let mut terminal = Terminal::new(backend)?;
+
+    let mut view = View::new();
+    loop {
+        app.update_state();
+        let ctx = ViewContext {
+            app_state: &app.state,
+            engine_state: app.engine_state_buf.output_buffer(),
+            file_browser: &app.file_browser,
+        };
+        terminal.draw(|f| view.render(f, ctx))?;
+
+        match input.next()? {
+            view::Input::Key(key) => {
+                let msg = view.handle_input(key, ctx);
+                if msg.is_exit() {
+                    return Ok(());
+                }
+                app.send(msg)?;
+            }
+            view::Input::Tick => {}
+        }
+    }
 }

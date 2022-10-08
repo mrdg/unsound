@@ -66,7 +66,7 @@ impl<'a> Editor<'a> {
 
         let mut db = 0;
         for i in 0..meter.height {
-            let rms = self.ctx.rms(track.index);
+            let rms = track.rms();
             let meter_color = |value: f32| {
                 let db = db as f32;
                 if value > db {
@@ -105,7 +105,7 @@ impl<'a> Editor<'a> {
             height: 2,
         };
 
-        let volume = format!("{:.2}", track.volume);
+        let volume = format!("{:.2}", track.volume());
         let volume = Paragraph::new(volume)
             .alignment(tui::layout::Alignment::Center)
             .block(Block::default().borders(Borders::TOP));
@@ -118,13 +118,13 @@ impl<'a> Editor<'a> {
             height: 2,
         };
 
-        if track.is_master {
+        if track.is_bus() {
             let block = Block::default().borders(Borders::TOP);
             block.render(button_area, buf);
             return;
         }
 
-        let button_style = if track.muted {
+        let button_style = if track.is_muted() {
             Style::default().bg(Color::DarkGray)
         } else {
             Style::default().bg(Color::Yellow).fg(Color::Black)
@@ -153,24 +153,29 @@ impl<'a> Editor<'a> {
         area: Rect,
         buf: &mut Buffer,
         track: &TrackView,
-        steps: &Range<usize>,
+        step_range: &Range<usize>,
     ) {
         let mut y = area.top() + 1;
-        for (line, note) in track.steps(steps).iter().enumerate() {
-            let line = line + steps.start;
+        for (line, step) in self
+            .ctx
+            .pattern_steps(track.index, step_range)
+            .iter()
+            .enumerate()
+        {
+            let line = line + step_range.start;
             let column = track.index * INPUTS_PER_STEP;
 
-            let pitch = match note.pitch {
+            let pitch = match step.pitch {
                 Some(pitch) => &NOTE_NAMES[pitch as usize],
                 None => "---",
             };
 
-            let snd = match note.sound {
+            let snd = match step.sound {
                 Some(v) => format!("{:0width$}", v, width = 2),
                 None => String::from("--"),
             };
 
-            let effects: Vec<(String, String)> = [note.effect1, note.effect2]
+            let effects: Vec<(String, String)> = [step.effect1, step.effect2]
                 .iter()
                 .map(|effect| match effect {
                     Some(effect) => {
@@ -197,7 +202,7 @@ impl<'a> Editor<'a> {
                     Style::default().bg(Color::Green).fg(Color::Black)
                 } else if self.current_line.unwrap_or(usize::MAX) == line
                     && offset == 0
-                    && note.pitch.is_some()
+                    && step.pitch.is_some()
                     && self.is_playing
                 {
                     // Pitch input is highlighted when it's the currently active note
@@ -259,7 +264,7 @@ impl<'a> StatefulWidget for &Editor<'a> {
         }
 
         let pattern_width = pattern_area.width - STEPS_WIDTH;
-        let num_tracks = ((pattern_width - MASTER_TRACK_WIDTH) / TRACK_WIDTH) as usize;
+        let num_tracks = ((pattern_width - BUS_TRACK_WIDTH) / TRACK_WIDTH) as usize;
 
         let selected_track = self.cursor.track();
         if selected_track >= state.track_offset + num_tracks {
@@ -305,7 +310,7 @@ impl<'a> StatefulWidget for &Editor<'a> {
             let inner = block.inner(area);
             block.render(area, buf);
             self.render_track_header(inner, buf, track);
-            if !track.is_master {
+            if !track.is_bus() {
                 self.render_track_steps(inner, buf, track, &steps);
             }
 
@@ -323,26 +328,24 @@ impl<'a> StatefulWidget for &Editor<'a> {
             self.render_mixer_controls(track, inner, buf);
         };
 
-        for (_, track) in self
-            .ctx
-            .iter_tracks()
-            .filter(|t| !t.is_master)
-            .enumerate()
-            .filter(|(i, _)| *i >= state.track_offset && *i < state.track_offset + num_tracks)
-        {
+        for track in self.ctx.iter_tracks().filter(|t| {
+            !t.is_bus()
+                && t.index >= state.track_offset
+                && t.index < state.track_offset + num_tracks
+        }) {
             render_track(x, TRACK_WIDTH, &track);
             x += TRACK_WIDTH;
         }
 
         // Master track sticks to the right of the editor area
-        let master_track = self.ctx.master_track();
-        let x = area.x + (area.width - MASTER_TRACK_WIDTH);
-        render_track(x, MASTER_TRACK_WIDTH, &master_track);
+        let master_track = self.ctx.master_bus();
+        let x = area.x + (area.width - BUS_TRACK_WIDTH);
+        render_track(x, BUS_TRACK_WIDTH, &master_track);
     }
 }
 
 const TRACK_WIDTH: u16 = "| C#4 05 v 20 R-10 |".len() as u16;
-const MASTER_TRACK_WIDTH: u16 = 12;
+const BUS_TRACK_WIDTH: u16 = 12;
 const STEPS_WIDTH: u16 = " 256 ".len() as u16;
 
 lazy_static! {

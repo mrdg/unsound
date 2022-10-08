@@ -4,7 +4,7 @@ use std::vec;
 use ringbuf::Consumer;
 use triple_buffer::Input;
 
-use crate::app::{AppState, AudioContext, DeviceID, EngineState, SharedState, TrackID};
+use crate::app::{AppState, AudioContext, DeviceID, EngineState, SharedState, TrackID, TrackType};
 use crate::audio::{Buffer, Rms, Stereo};
 use crate::params::Params;
 use crate::pattern::{NoteEvent, DEFAULT_VELOCITY};
@@ -117,7 +117,12 @@ impl Engine {
 
         let mut buffer = buffer;
         while let Some(block_size) = self.next_block(ctx, buffer.len()) {
-            for (i, track_info) in ctx.instrument_tracks().enumerate() {
+            for (i, track_info) in ctx
+                .tracks()
+                .iter()
+                .filter(|t| matches!(t.track_type, TrackType::Instrument))
+                .enumerate()
+            {
                 let track = self.tracks.get_mut(&track_info.id).unwrap();
                 for (j, device) in track_info.devices.iter().enumerate() {
                     let device_ctx = DeviceContext::new(i, j, &ctx);
@@ -134,7 +139,7 @@ impl Engine {
                 }
             }
 
-            let master = self.tracks.get_mut(&ctx.master_track().id).unwrap();
+            let master = self.tracks.get_mut(&ctx.master_bus().id).unwrap();
             master.rms.add_frames(&self.sum_buf[..block_size]);
 
             for (i, frame) in buffer.iter_mut().enumerate().take(block_size) {
