@@ -86,7 +86,7 @@ impl Pattern {
                 .iter()
                 .enumerate()
                 .filter(move |(l, _)| *l == line)
-                .map(move |(_, &step)| {
+                .filter_map(move |(_, &step)| {
                     step.pitch.map(|pitch| NoteEvent {
                         pitch,
                         track: i as u8,
@@ -95,7 +95,6 @@ impl Pattern {
                         fx2: step.effect2,
                     })
                 })
-                .flatten()
         })
     }
 }

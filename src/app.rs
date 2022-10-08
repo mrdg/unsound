@@ -190,7 +190,7 @@ impl App {
             let sampler = Box::new(Sampler::new());
             let params = sampler.params();
             let sampler_id = self.id_generator.device();
-            self.device_params.insert(sampler_id.clone(), params);
+            self.device_params.insert(sampler_id, params);
             self.send_to_engine(EngineCommand::CreateDevice(track_id, sampler_id, sampler))?;
 
             let sampler = Device {

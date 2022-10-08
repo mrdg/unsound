@@ -119,7 +119,7 @@ impl ParamIterExt for Arc<dyn Params> {
     fn iter(&self) -> ParamIter {
         ParamIter {
             current: 0,
-            params: &self,
+            params: self,
         }
     }
 }

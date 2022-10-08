@@ -75,7 +75,7 @@ enum VoiceState {
     Busy,
 }
 
-impl<'a> Voice {
+impl Voice {
     fn new(params: &SamplerParams) -> Self {
         let adsr = params.adsr();
         Self {
@@ -122,7 +122,7 @@ pub fn load_file(path: &Utf8PathBuf) -> Result<AudioFile> {
         .collect::<Vec<f32>>()
         .chunks(wav_spec.channels as usize)
         .map(|f| {
-            let left = *f.get(0).unwrap();
+            let left = *f.first().unwrap();
             let right = *f.get(1).unwrap_or(&left);
             Frame::new([left, right])
         })

@@ -1,6 +1,6 @@
 use crate::{sampler::Adsr, SAMPLE_RATE};
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum State {
     Idle,
     Attack,
