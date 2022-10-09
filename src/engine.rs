@@ -14,6 +14,7 @@ use crate::{INTERNAL_BUFFER_SIZE, SAMPLE_RATE};
 
 pub const INSTRUMENT_TRACKS: usize = 16;
 pub const TOTAL_TRACKS: usize = INSTRUMENT_TRACKS + 1; // master track
+pub const TICKS_PER_LINE: usize = 12;
 const MAX_TRACK_EFFECTS: usize = 5;
 
 const RMS_WINDOW_SIZE: usize = SAMPLE_RATE as usize / 10 * 3;
@@ -136,7 +137,7 @@ impl Engine {
                     ctx.pattern(curr_pattern).unwrap()
                 });
 
-                for note in pattern.notes(self.state.current_tick as u64) {
+                for note in pattern.notes(self.state.current_tick) {
                     if ctx.is_track_muted(note.track as usize) {
                         // TODO: trigger fade out for muted channels so sounds with long
                         // release don't keep playing
@@ -150,14 +151,15 @@ impl Engine {
                 }
 
                 self.state.current_tick += 1;
-                if self.state.current_tick >= pattern.len() {
+                if self.state.current_tick >= pattern.ticks() {
                     self.state.current_tick = 0;
                     curr_pattern = ctx.next_pattern(curr_pattern);
                 }
                 self.state.current_pattern = curr_pattern;
             }
 
-            let samples_to_tick = (SAMPLE_RATE * 60.) / (ctx.lines_per_beat() * ctx.bpm()) as f64;
+            let samples_to_tick = (SAMPLE_RATE * 60.)
+                / (TICKS_PER_LINE as u16 * ctx.lines_per_beat() * ctx.bpm()) as f64;
             self.samples_to_tick = samples_to_tick.round() as usize;
         }
 

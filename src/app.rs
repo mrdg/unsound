@@ -5,7 +5,7 @@ use ringbuf::{Producer, RingBuffer};
 use triple_buffer::{Input, Output, TripleBuffer};
 
 use crate::audio::Stereo;
-use crate::engine::{self, Device as AudioDevice, Engine, INSTRUMENT_TRACKS};
+use crate::engine::{self, Device as AudioDevice, Engine, INSTRUMENT_TRACKS, TICKS_PER_LINE};
 use crate::files::FileBrowser;
 use crate::params::Params;
 use crate::pattern::{self, Position, Step, StepSize, MAX_PATTERNS};
@@ -476,8 +476,7 @@ impl<'a> ViewContext<'a> {
     }
 
     pub fn current_line(&self) -> usize {
-        // TODO: lines vs ticks
-        self.engine_state.current_tick
+        self.engine_state.current_tick / TICKS_PER_LINE
     }
 
     pub fn active_pattern_index(&self) -> usize {

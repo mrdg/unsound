@@ -5,6 +5,7 @@ use std::ops::{Add, Sub};
 use num_traits::identities::Zero;
 
 use crate::app::ViewContext;
+use crate::engine::TICKS_PER_LINE;
 use crate::sampler::ROOT_PITCH;
 
 pub const INPUTS_PER_STEP: usize = 6;
@@ -56,6 +57,10 @@ impl Pattern {
         self.tracks[0].steps.len()
     }
 
+    pub fn ticks(&self) -> usize {
+        self.len() * TICKS_PER_LINE
+    }
+
     pub fn set_len(&mut self, new_len: usize) {
         if new_len > MAX_PATTERN_LEN {
             // TODO: return error
@@ -78,30 +83,38 @@ impl Pattern {
         self.tracks[pos.track()].steps[pos.line] = step;
     }
 
-    pub fn notes(&self, tick: u64) -> impl Iterator<Item = NoteEvent> + '_ {
-        let line = (tick % self.len() as u64) as usize;
+    // For each track in the pattern, return notes that should be played on the given tick. The
+    // tick is relative to the start of the pattern.
+    pub fn notes(&self, tick: usize) -> impl Iterator<Item = NoteEvent> + '_ {
+        let line = tick / TICKS_PER_LINE;
         self.tracks.iter().enumerate().flat_map(move |(i, track)| {
-            track
-                .steps
-                .iter()
-                .enumerate()
-                .filter(move |(l, _)| *l == line)
-                .filter_map(move |(_, &step)| {
-                    step.pitch.map(|pitch| NoteEvent {
-                        pitch,
-                        track: i as u8,
-                        sound: step.sound.unwrap_or(i as u8),
-                        fx1: step.effect1,
-                        fx2: step.effect2,
-                    })
+            let step = &track.steps[line];
+            let line_tick = line * TICKS_PER_LINE;
+
+            let mut has_offset = false;
+            let offset_match = step.offsets().any(|offset| {
+                has_offset = true;
+                line_tick + offset as usize == tick
+            });
+
+            if (!has_offset && line_tick == tick) || offset_match {
+                step.pitch.map(|pitch| NoteEvent {
+                    pitch,
+                    track: i as u8,
+                    sound: step.sound.unwrap_or(i as u8),
+                    fx1: step.effect1,
+                    fx2: step.effect2,
                 })
+            } else {
+                None
+            }
         })
     }
 }
 
 #[derive(Clone, Debug)]
 pub struct Track {
-    pub steps: Vec<Step>,
+    steps: Vec<Step>,
 }
 
 pub struct NoteEvent {
@@ -127,6 +140,22 @@ pub struct Step {
 }
 
 impl Step {
+    fn offsets(&self) -> impl Iterator<Item = u8> + '_ {
+        self.effect1
+            .iter()
+            .chain(self.effect2.iter())
+            .flat_map(|effect| {
+                if let Effect::Offset(offset) = effect {
+                    Some(*offset)
+                } else {
+                    None
+                }
+            })
+            .flatten()
+    }
+}
+
+impl Step {
     pub fn input(&mut self, pos: Position) -> Box<dyn Input + '_> {
         match pos.column % INPUTS_PER_STEP {
             0 => Box::new(PitchInput::new(&mut self.pitch)),
@@ -145,6 +174,10 @@ impl Step {
                 Effect::Chord(c) => Box::new(NumInput::new(c, 0, 0, 999, [1, 10])),
                 Effect::Velocity(v) => {
                     Box::new(NumInput::new(v, DEFAULT_VELOCITY, 0, 127, [1, 10]))
+                }
+                Effect::Offset(o) => {
+                    let max = TICKS_PER_LINE as u8 - 1;
+                    Box::new(NumInput::new(o, 0, 0, max, [1, 10]))
                 }
             }
         } else {
@@ -302,6 +335,7 @@ impl Input for NullInput {
 pub enum Effect {
     Chord(Option<i16>),
     Velocity(Option<u8>),
+    Offset(Option<u8>),
 }
 
 impl Effect {
@@ -309,6 +343,7 @@ impl Effect {
         match self {
             Effect::Chord(c) => EffectDesc::new('C', *c),
             Effect::Velocity(v) => EffectDesc::new('V', *v),
+            Effect::Offset(o) => EffectDesc::new('o', *o),
         }
     }
 }
@@ -342,6 +377,7 @@ impl<'a> Input for EffectInput<'a> {
         let new = match key {
             'V' => Effect::Velocity(None),
             'C' => Effect::Chord(None),
+            'o' => Effect::Offset(None),
             _ => return,
         };
         *self.value = Some(new);
@@ -353,5 +389,71 @@ impl<'a> Input for EffectInput<'a> {
 
     fn clear(&mut self) {
         *self.value = None;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn position(track: usize, line: usize) -> Position {
+        Position {
+            line,
+            column: INPUTS_PER_STEP * track,
+        }
+    }
+
+    #[test]
+    fn note_on_line() {
+        let mut pattern = Pattern::new(2);
+        let mut step = Step::default();
+        for track in 0..2 {
+            step.pitch = Some(60);
+            pattern.set_step(position(track, 0), step);
+        }
+
+        let notes: Vec<NoteEvent> = pattern.notes(0).collect();
+        let pitches: Vec<u8> = notes.iter().map(|n| n.pitch).collect();
+        assert_eq!(vec![60, 60], pitches);
+        let tracks: Vec<u8> = notes.iter().map(|n| n.track).collect();
+        assert_eq!(vec![0, 1], tracks);
+    }
+
+    #[test]
+    fn note_with_offset() {
+        let mut pattern = Pattern::new(1);
+        let mut step = Step::default();
+        step.pitch = Some(60);
+        step.effect1 = Some(Effect::Offset(Some(2)));
+        pattern.set_step(position(0, 0), step);
+        let notes: Vec<NoteEvent> = pattern.notes(2).collect();
+        assert_eq!(1, notes.len());
+    }
+
+    #[test]
+    fn note_with_offset_but_no_match() {
+        let mut pattern = Pattern::new(1);
+        let mut step = Step::default();
+        step.pitch = Some(60);
+        step.effect1 = Some(Effect::Offset(Some(2)));
+        pattern.set_step(position(0, 0), step);
+        let notes: Vec<NoteEvent> = pattern.notes(0).collect();
+        assert_eq!(0, notes.len());
+    }
+
+    #[test]
+    fn note_with_two_offsets() {
+        let mut pattern = Pattern::new(1);
+        let mut step = Step::default();
+        step.pitch = Some(60);
+        step.effect1 = Some(Effect::Offset(Some(2)));
+        step.effect2 = Some(Effect::Offset(Some(3)));
+
+        pattern.set_step(position(0, 0), step);
+        let notes: Vec<NoteEvent> = pattern.notes(2).collect();
+        assert_eq!(1, notes.len());
+
+        let notes: Vec<NoteEvent> = pattern.notes(3).collect();
+        assert_eq!(1, notes.len());
     }
 }

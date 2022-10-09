@@ -251,6 +251,8 @@ impl Device for Sampler {
                         velocity = Some(*v);
                     }
                 }
+                // Offset is handled during sequencing
+                Effect::Offset(_) => {}
             }
         }
         if event.pitch == NOTE_OFF {
