@@ -1,4 +1,5 @@
 pub mod editor;
+pub mod pattern;
 
 use std::time::Duration;
 

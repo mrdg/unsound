@@ -8,8 +8,9 @@ use crate::audio::Stereo;
 use crate::engine::{self, Device as AudioDevice, Engine, INSTRUMENT_TRACKS, TICKS_PER_LINE};
 use crate::files::FileBrowser;
 use crate::params::Params;
-use crate::pattern::{self, Position, Step, StepSize, MAX_PATTERNS};
+use crate::pattern::{Position, Step, StepSize, MAX_PATTERNS};
 use crate::sampler::{self, AudioFile, Sampler};
+use crate::view::{self, pattern::IntoInput};
 use crate::{engine::EngineCommand, pattern::Pattern, sampler::Sound};
 use std::collections::HashMap;
 use std::ops::Range;
@@ -463,10 +464,10 @@ impl<'a> ViewContext<'a> {
 
     pub fn update_step<F>(&self, pos: Position, f: F) -> Step
     where
-        F: Fn(Box<dyn pattern::Input + '_>),
+        F: Fn(Box<dyn view::pattern::Input + '_>),
     {
         let mut step = self.selected_pattern().step(pos);
-        let input = step.input(pos);
+        let input = step.into_input(pos);
         f(input);
         step
     }
