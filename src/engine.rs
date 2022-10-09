@@ -32,6 +32,7 @@ pub trait Device {
 
 pub struct Track {
     devices: HashMap<DeviceID, Box<dyn Device + Send>>,
+    buf: Buffer,
     rms: Rms,
 }
 
@@ -39,6 +40,7 @@ impl Track {
     pub fn new() -> Self {
         Self {
             rms: Rms::new(RMS_WINDOW_SIZE),
+            buf: vec![Stereo::ZERO; INTERNAL_BUFFER_SIZE],
             devices: HashMap::with_capacity(MAX_TRACK_EFFECTS),
         }
     }
@@ -48,7 +50,6 @@ pub struct Engine {
     state: EngineState,
     state_buf: Input<EngineState>,
     tracks: HashMap<TrackID, Box<Track>>,
-    track_buf: Buffer,
     sum_buf: Buffer,
     preview: Sampler,
     consumer: Consumer<EngineCommand>,
@@ -68,7 +69,6 @@ impl Engine {
             tracks,
             state,
             state_buf,
-            track_buf: vec![Stereo::ZERO; INTERNAL_BUFFER_SIZE],
             sum_buf: vec![Stereo::ZERO; INTERNAL_BUFFER_SIZE],
             preview,
             consumer,
@@ -82,32 +82,31 @@ impl Engine {
 
         let mut buffer = buffer;
         while let Some(block_size) = self.next_block(ctx, buffer.len()) {
-            for (i, track_info) in ctx
+            for track_info in ctx
                 .tracks()
                 .iter()
                 .filter(|t| matches!(t.track_type, TrackType::Instrument))
-                .enumerate()
             {
                 let track = self.tracks.get_mut(&track_info.id).unwrap();
                 for device in track_info.devices.iter() {
                     let device = track.devices.get_mut(&device.id).unwrap();
-                    device.render(ctx, &mut self.track_buf[..block_size]);
+                    device.render(ctx, &mut track.buf[..block_size]);
                 }
-
-                // TODO: measure rms after volume fader
-                track.rms.add_frames(&self.track_buf[..block_size]);
-
                 for j in 0..block_size {
-                    self.sum_buf[j] += self.track_buf[j] * ctx.track_volume(i) as f32;
-                    self.track_buf[j] = Stereo::ZERO;
+                    let frame = track.buf[j] * track_info.volume.val() as f32;
+                    track.rms.add_frame(frame);
+                    self.sum_buf[j] += frame;
+                    track.buf[j] = Stereo::ZERO;
                 }
             }
 
-            let master = self.tracks.get_mut(&ctx.master_bus().id).unwrap();
-            master.rms.add_frames(&self.sum_buf[..block_size]);
+            let bus_info = ctx.master_bus();
+            let bus = self.tracks.get_mut(&bus_info.id).unwrap();
 
-            for (i, frame) in buffer.iter_mut().enumerate().take(block_size) {
-                *frame = self.sum_buf[i];
+            for (i, output) in buffer.iter_mut().enumerate().take(block_size) {
+                let frame = self.sum_buf[i] * bus_info.volume.val() as f32;
+                bus.rms.add_frame(frame);
+                *output = frame;
                 self.sum_buf[i] = Stereo::ZERO;
             }
 

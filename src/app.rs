@@ -301,7 +301,7 @@ pub struct Track {
 
     pub track_type: TrackType,
     pub name: Option<String>,
-    volume: Volume,
+    pub volume: Volume,
     muted: bool,
     rms: [Arc<AtomicF32>; 2],
 }
@@ -586,10 +586,6 @@ impl<'a> AudioContext<'a> {
 
     pub fn is_track_muted(&self, track: usize) -> bool {
         self.app_state.tracks[track].muted
-    }
-
-    pub fn track_volume(&self, track: usize) -> f64 {
-        self.app_state.tracks[track].volume.val()
     }
 
     pub fn sound(&self, idx: usize) -> &Option<Sound> {
