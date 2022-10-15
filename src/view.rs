@@ -1,27 +1,26 @@
+pub mod context;
 pub mod editor;
 pub mod pattern;
 
 use std::time::Duration;
 
-use crate::app::{Msg, SharedState, ViewContext};
+use crate::app::Msg;
 pub use crate::input::{Input, InputQueue};
 use crate::params::ParamIterExt;
 use crate::pattern::Position;
 use crate::pattern::StepSize;
+pub use crate::view::context::ViewContext;
 pub use crate::view::editor::{Editor, EditorState};
 use anyhow::{anyhow, Result};
 use camino::Utf8PathBuf;
 use termion::event::Key;
 use tui::{
     backend::Backend,
-    buffer::Buffer,
     layout::Rect,
     layout::{Alignment, Constraint, Direction, Layout},
     style::{Color, Style},
     text::{Span, Spans},
-    widgets::{
-        Block, Borders, List as ListView, ListItem, ListState, Paragraph, StatefulWidget, Widget,
-    },
+    widgets::{Block, Borders, List as ListView, ListItem, ListState, Paragraph},
     Frame,
 };
 
@@ -36,7 +35,7 @@ pub struct View {
     devices: List,
     patterns: List,
     editor: EditorState,
-    command: CommandState,
+    command: String,
     project_tree_state: ProjectTreeState,
 }
 
@@ -53,9 +52,7 @@ impl View {
             files: List::default(),
             editor: EditorState::default(),
             focus: Focus::Editor,
-            command: CommandState {
-                buffer: String::with_capacity(1024),
-            },
+            command: String::new(),
             project_tree_state: ProjectTreeState::Sounds,
         }
     }
@@ -84,17 +81,40 @@ impl View {
         let command = sections[2];
 
         self.render_main(f, ctx, main);
+        self.render_command_line(f, ctx, command);
 
-        // Command input
-        let command_line = CommandLine {};
-        f.render_stateful_widget(command_line, command, &mut self.command);
-
-        // Status line
         let block = Block::default().borders(Borders::all());
         let area = block.inner(status);
         f.render_widget(block, status);
-        let status_line = StatusLine::new(ctx);
-        f.render_widget(&status_line, area);
+        self.render_status_line(f, ctx, area);
+    }
+
+    fn render_command_line<B: Backend>(&mut self, f: &mut Frame<B>, _ctx: ViewContext, area: Rect) {
+        if !self.command.is_empty() {
+            let spans = Spans::from(vec![Span::raw(":"), Span::raw(&*self.command)]);
+            let p = Paragraph::new(spans);
+            f.render_widget(p, area)
+        }
+    }
+
+    fn render_status_line<B: Backend>(&mut self, f: &mut Frame<B>, ctx: ViewContext, area: Rect) {
+        let s = format!(
+            " *Untitled*    BPM {}    LPB {}    Oct {}",
+            ctx.bpm(),
+            ctx.lines_per_beat(),
+            ctx.octave()
+        );
+        let p = Paragraph::new(s).alignment(Alignment::Left);
+        f.render_widget(p, area);
+
+        let p = Paragraph::new(format!(
+            "[ {:0width$} . {:0width$} ]   ",
+            ctx.active_pattern_index(),
+            ctx.current_line(),
+            width = 3
+        ))
+        .alignment(Alignment::Right);
+        f.render_widget(p, area);
     }
 
     fn render_main<B: Backend>(&mut self, f: &mut Frame<B>, ctx: ViewContext, area: Rect) {
@@ -130,8 +150,7 @@ impl View {
         let area = block.inner(sections[1]);
         f.render_widget(block, sections[1]);
 
-        let in_focus = self.focus == Focus::Editor;
-        let editor = Editor::new(self.cursor.pos, in_focus, ctx);
+        let editor = Editor::new(self.cursor.pos, self.focus, ctx);
         f.render_stateful_widget(&editor, area, &mut self.editor);
     }
 
@@ -394,7 +413,7 @@ impl View {
         if self.focus == Focus::CommandLine {
             match key {
                 Key::Char('\n') => {
-                    let parts: Vec<&str> = self.command.buffer.split_whitespace().collect();
+                    let parts: Vec<&str> = self.command.split_whitespace().collect();
                     if parts.is_empty() {
                         return Err(anyhow!("invalid command"));
                     }
@@ -422,15 +441,15 @@ impl View {
                         }
                         _ => Err(anyhow!("invalid command {}", parts[0])),
                     };
-                    self.command.buffer.clear();
+                    self.command.clear();
                     self.focus = Focus::Editor;
                     return msg;
                 }
                 Key::Backspace => {
-                    self.command.buffer.pop();
+                    self.command.pop();
                 }
-                Key::Char(char) => self.command.buffer.push(char),
-                Key::Esc => self.command.buffer.clear(),
+                Key::Char(char) => self.command.push(char),
+                Key::Esc => self.command.clear(),
                 _ => return Ok(Noop),
             }
             if key == Key::Esc || key == Key::Char('\n') {
@@ -654,8 +673,8 @@ impl View {
     }
 }
 
-#[derive(PartialEq, Debug)]
-enum Focus {
+#[derive(PartialEq, Debug, Clone, Copy)]
+pub enum Focus {
     Editor,
     CommandLine,
     ProjectTree,
@@ -668,62 +687,6 @@ enum ProjectTreeState {
     Tracks,
     Devices(usize),
     DeviceParams(usize, usize),
-}
-
-struct StatusLine {
-    bpm: u16,
-    lines_per_beat: u16,
-    octave: u16,
-    pattern_index: usize,
-    line: usize,
-}
-
-impl StatusLine {
-    fn new(ctx: ViewContext) -> Self {
-        Self {
-            bpm: ctx.bpm(),
-            lines_per_beat: ctx.lines_per_beat(),
-            octave: ctx.octave(),
-            pattern_index: ctx.active_pattern_index(),
-            line: ctx.current_line(),
-        }
-    }
-}
-impl Widget for &StatusLine {
-    fn render(self, area: Rect, buf: &mut Buffer) {
-        let s = format!(
-            " *Untitled*    BPM {}    LPB {}    Oct {}",
-            self.bpm, self.lines_per_beat, self.octave
-        );
-        let p = Paragraph::new(s).alignment(Alignment::Left);
-        p.render(area, buf);
-
-        let p = Paragraph::new(format!(
-            "[ {:0width$} . {:0width$} ]   ",
-            self.pattern_index,
-            self.line,
-            width = 3
-        ))
-        .alignment(Alignment::Right);
-        p.render(area, buf);
-    }
-}
-
-struct CommandLine {}
-
-struct CommandState {
-    buffer: String,
-}
-
-impl StatefulWidget for CommandLine {
-    type State = CommandState;
-
-    fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
-        if !state.buffer.is_empty() {
-            buf.set_string(area.left(), area.top(), ":", Style::default());
-            buf.set_string(area.left() + 1, area.top(), &state.buffer, Style::default());
-        }
-    }
 }
 
 fn shorten_path(path: &Utf8PathBuf, width: usize) -> String {

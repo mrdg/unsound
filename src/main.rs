@@ -15,14 +15,14 @@ mod sampler;
 mod view;
 
 use anyhow::{anyhow, Result};
-use app::{Msg, TrackType};
+use app::{EngineState, Msg, TrackType};
 use assert_no_alloc::*;
 use audio::Stereo;
 use camino::Utf8PathBuf;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use engine::{Engine, INSTRUMENT_TRACKS};
 use triple_buffer::Output;
-use view::InputQueue;
+use view::{InputQueue, ViewContext};
 
 use crate::view::View;
 use std::io;
@@ -54,7 +54,7 @@ fn main() {
 }
 
 fn run() -> Result<()> {
-    let (mut app, app_state, engine) = app::new()?;
+    let (mut app, app_state, engine, engine_state) = app::new()?;
 
     let num_tracks = INSTRUMENT_TRACKS;
 
@@ -80,7 +80,7 @@ fn run() -> Result<()> {
     let stream = run_audio(app_state, engine)?;
     stream.play()?;
 
-    run_app(app)
+    run_app(app, engine_state)
 }
 
 fn run_audio(mut app_state: Output<AppState>, mut engine: Engine) -> Result<cpal::Stream> {
@@ -116,7 +116,7 @@ fn run_audio(mut app_state: Output<AppState>, mut engine: Engine) -> Result<cpal
     Ok(stream)
 }
 
-fn run_app(mut app: App) -> Result<()> {
+fn run_app(mut app: App, mut engine_state: Output<EngineState>) -> Result<()> {
     let mut input = InputQueue::new();
     let stdout = io::stdout().into_raw_mode()?;
     let stdout = MouseTerminal::from(stdout);
@@ -126,7 +126,12 @@ fn run_app(mut app: App) -> Result<()> {
 
     let mut view = View::new();
     loop {
-        let ctx = app.view_context();
+        let ctx = ViewContext::new(
+            &app.device_params,
+            &app.state,
+            engine_state.read(),
+            &app.file_browser,
+        );
         terminal.draw(|f| view.render(f, ctx))?;
 
         match input.next()? {

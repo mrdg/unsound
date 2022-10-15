@@ -5,15 +5,13 @@ use ringbuf::{Producer, RingBuffer};
 use triple_buffer::{Input, Output, TripleBuffer};
 
 use crate::audio::Stereo;
-use crate::engine::{self, Device as AudioDevice, Engine, INSTRUMENT_TRACKS, TICKS_PER_LINE};
+use crate::engine::{self, Device as AudioDevice, Engine, INSTRUMENT_TRACKS};
 use crate::files::FileBrowser;
 use crate::params::Params;
 use crate::pattern::{Position, Step, StepSize, MAX_PATTERNS};
 use crate::sampler::{self, AudioFile, Sampler};
-use crate::view::{self, pattern::IntoInput};
 use crate::{engine::EngineCommand, pattern::Pattern, sampler::Sound};
 use std::collections::HashMap;
-use std::ops::Range;
 use std::sync::Arc;
 
 use std::fmt;
@@ -22,27 +20,16 @@ use std::fmt::Formatter;
 use std::sync::atomic::Ordering;
 
 pub struct App {
-    state: AppState,
+    pub state: AppState,
     state_buf: Input<AppState>,
-    engine_state_buf: Output<EngineState>,
     producer: Producer<EngineCommand>,
-    file_browser: FileBrowser,
+    pub file_browser: FileBrowser,
     file_cache: HashMap<Utf8PathBuf, Arc<AudioFile>>,
     id_generator: IdGenerator,
-    device_params: HashMap<DeviceID, Arc<dyn Params>>,
+    pub device_params: HashMap<DeviceID, Arc<dyn Params>>,
 }
 
 impl App {
-    pub fn view_context(&mut self) -> ViewContext {
-        let engine_state = self.engine_state_buf.read();
-        ViewContext {
-            device_params: &self.device_params,
-            app_state: &self.state,
-            engine_state,
-            file_browser: &self.file_browser,
-        }
-    }
-
     pub fn send(&mut self, msg: Msg) -> Result<()> {
         self.dispatch(msg)?;
         let input_buf = self.state_buf.input_buffer();
@@ -283,16 +270,16 @@ pub struct EngineState {
 
 #[derive(Clone)]
 pub struct AppState {
-    lines_per_beat: u16,
-    bpm: u16,
-    octave: u16,
-    is_playing: bool,
-    selected_pattern: usize,
-    patterns: HashMap<PatternID, Arc<Pattern>>,
-    song: Vec<PatternID>,
-    loop_range: Option<(usize, usize)>,
-    sounds: Vec<Option<Sound>>,
-    tracks: Vec<Track>,
+    pub lines_per_beat: u16,
+    pub bpm: u16,
+    pub octave: u16,
+    pub is_playing: bool,
+    pub selected_pattern: usize,
+    pub patterns: HashMap<PatternID, Arc<Pattern>>,
+    pub song: Vec<PatternID>,
+    pub loop_range: Option<(usize, usize)>,
+    pub sounds: Vec<Option<Sound>>,
+    pub tracks: Vec<Track>,
 }
 
 #[derive(Clone)]
@@ -303,12 +290,12 @@ pub struct Track {
     pub track_type: TrackType,
     pub name: Option<String>,
     pub volume: Volume,
-    muted: bool,
+    pub muted: bool,
     rms: [Arc<AtomicF32>; 2],
 }
 
 impl Track {
-    fn rms(&self) -> (f32, f32) {
+    pub fn rms(&self) -> (f32, f32) {
         (
             self.rms[0].load(Ordering::Relaxed),
             self.rms[1].load(Ordering::Relaxed),
@@ -333,7 +320,7 @@ pub enum TrackType {
     Bus,
 }
 
-pub fn new() -> Result<(App, Output<AppState>, Engine)> {
+pub fn new() -> Result<(App, Output<AppState>, Engine, Output<EngineState>)> {
     let engine_state = EngineState {
         current_pattern: 0,
         current_tick: 0,
@@ -352,25 +339,28 @@ pub fn new() -> Result<(App, Output<AppState>, Engine)> {
         tracks: Vec::new(),
     };
 
+    // Triple buffers are used to share app state with the engine and vice versa. This should
+    // ensure that both threads always have a coherent view of the other thread's state.
     let (app_state_input, app_state_output) = TripleBuffer::new(&app_state).split();
     let (engine_state_input, engine_state_output) = TripleBuffer::new(&engine_state).split();
+
     let (producer, consumer) = RingBuffer::<EngineCommand>::new(64).split();
     let engine = Engine::new(engine_state, engine_state_input, consumer);
 
     let mut app = App {
         state: app_state,
         state_buf: app_state_input,
-        engine_state_buf: engine_state_output,
         producer,
         file_browser: FileBrowser::with_path("./sounds")?,
         file_cache: HashMap::new(),
         id_generator: IdGenerator { current: 0 },
         device_params: HashMap::new(),
     };
+
     let mut master_bus = app.create_track(TrackType::Bus)?;
     master_bus.name = Some("Master".to_owned());
     app.state.tracks.push(master_bus);
-    Ok((app, app_state_output, engine))
+    Ok((app, app_state_output, engine, engine_state_output))
 }
 
 pub enum Msg {
@@ -429,131 +419,6 @@ pub trait SharedState {
 
     fn tracks(&self) -> &Vec<Track> {
         &self.app().tracks
-    }
-}
-
-#[derive(Copy, Clone)]
-pub struct ViewContext<'a> {
-    device_params: &'a HashMap<DeviceID, Arc<dyn Params>>,
-    app_state: &'a AppState,
-    engine_state: &'a EngineState,
-    pub file_browser: &'a FileBrowser,
-}
-
-impl<'a> SharedState for ViewContext<'a> {
-    fn app(&self) -> &AppState {
-        self.app_state
-    }
-}
-
-impl<'a> ViewContext<'a> {
-    pub fn params(&self, track_idx: usize, device_idx: usize) -> &Arc<dyn Params> {
-        let device = &self.app().tracks[track_idx].devices[device_idx];
-        self.device_params.get(&device.id).unwrap()
-    }
-
-    pub fn patterns(&self) -> impl Iterator<Item = &Arc<Pattern>> {
-        self.song()
-            .iter()
-            .map(move |id| self.app().patterns.get(id).unwrap())
-    }
-
-    pub fn octave(&self) -> u16 {
-        self.app_state.octave
-    }
-
-    pub fn update_step<F>(&self, pos: Position, f: F) -> Step
-    where
-        F: Fn(Box<dyn view::pattern::Input + '_>),
-    {
-        let mut step = self.selected_pattern().step(pos);
-        let input = step.into_input(pos);
-        f(input);
-        step
-    }
-
-    pub fn devices(&self, track_idx: usize) -> &Vec<Device> {
-        &self.app_state.tracks[track_idx].devices
-    }
-
-    pub fn current_line(&self) -> usize {
-        self.engine_state.current_tick / TICKS_PER_LINE
-    }
-
-    pub fn active_pattern_index(&self) -> usize {
-        self.engine_state.current_pattern
-    }
-
-    pub fn master_bus(&self) -> TrackView {
-        let track = self.tracks().last().unwrap();
-        TrackView {
-            track,
-            index: self.app_state.tracks.len() - 1,
-        }
-    }
-
-    pub fn iter_tracks(&self) -> impl Iterator<Item = TrackView> {
-        self.tracks()
-            .iter()
-            .enumerate()
-            .map(|(i, track)| TrackView { track, index: i })
-    }
-
-    pub fn pattern_steps(&self, track_idx: usize, range: &Range<usize>) -> &[Step] {
-        let pattern = self.selected_pattern();
-        let steps = pattern.steps(track_idx);
-        &steps[range.start..range.end]
-    }
-
-    pub fn song(&self) -> &Vec<PatternID> {
-        &self.app().song
-    }
-
-    pub fn loop_contains(&self, idx: usize) -> bool {
-        if let Some(loop_range) = self.app().loop_range {
-            loop_range.0 <= idx && idx <= loop_range.1
-        } else {
-            false
-        }
-    }
-
-    pub fn selected_pattern(&self) -> &Pattern {
-        let id = self.app().song[self.app().selected_pattern];
-        self.app().patterns.get(&id).unwrap()
-    }
-
-    pub fn selected_pattern_index(&self) -> usize {
-        self.app().selected_pattern
-    }
-}
-
-pub struct TrackView<'a> {
-    track: &'a Track,
-    pub index: usize,
-}
-
-impl TrackView<'_> {
-    pub fn name(&self) -> String {
-        self.track
-            .name
-            .clone() // TODO: prevent clone
-            .unwrap_or_else(|| self.index.to_string())
-    }
-
-    pub fn rms(&self) -> (f32, f32) {
-        self.track.rms()
-    }
-
-    pub fn is_muted(&self) -> bool {
-        self.track.muted
-    }
-
-    pub fn volume(&self) -> f64 {
-        self.track.volume.db()
-    }
-
-    pub fn is_bus(&self) -> bool {
-        matches!(self.track.track_type, TrackType::Bus)
     }
 }
 

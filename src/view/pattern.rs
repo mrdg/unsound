@@ -1,21 +1,21 @@
 use num_traits::Zero;
 
-use crate::app::ViewContext;
 use crate::engine::TICKS_PER_LINE;
 use crate::pattern::{
     Effect, Position, Step, StepSize, DEFAULT_VELOCITY, INPUTS_PER_STEP, NOTE_OFF,
 };
 use crate::sampler::ROOT_PITCH;
+use crate::view::context::ViewContext;
 
 use std::convert::{TryFrom, TryInto};
 use std::ops::{Add, Sub};
 
-pub trait IntoInput {
-    fn into_input(&mut self, pos: Position) -> Box<dyn Input + '_>;
+pub trait StepInput {
+    fn input(&mut self, pos: Position) -> Box<dyn Input + '_>;
 }
 
-impl IntoInput for Step {
-    fn into_input(&mut self, pos: Position) -> Box<dyn Input + '_> {
+impl StepInput for Step {
+    fn input(&mut self, pos: Position) -> Box<dyn Input + '_> {
         match pos.column % INPUTS_PER_STEP {
             0 => Box::new(PitchInput::new(&mut self.pitch)),
             1 => Box::new(NumInput::new(&mut self.sound, 0, 0, 99, [1, 10])),

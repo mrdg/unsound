@@ -94,6 +94,8 @@ impl Pattern {
                 step.pitch.map(|pitch| NoteEvent {
                     pitch,
                     track: i as u8,
+                    // TODO: this will break when deleting tracks. Probably better to just
+                    // set the sound field when a pitch is entered.
                     sound: step.sound.unwrap_or(i as u8),
                     fx1: step.effect1,
                     fx2: step.effect2,

@@ -1,7 +1,8 @@
 use std::ops::Range;
 
-use crate::app::{SharedState, TrackView, ViewContext};
 use crate::pattern::{Position, INPUTS_PER_STEP, MAX_PITCH};
+use crate::view::context::{TrackView, ViewContext};
+use crate::view::Focus;
 use tui::layout::{Alignment, Constraint, Direction, Layout};
 use tui::widgets::Paragraph;
 use tui::{
@@ -21,32 +22,12 @@ pub struct EditorState {
 pub struct Editor<'a> {
     ctx: ViewContext<'a>,
     cursor: Position,
-    current_line: Option<usize>,
-    lines_per_beat: usize,
-    in_focus: bool,
-    is_playing: bool,
+    focus: Focus,
 }
 
 impl<'a> Editor<'a> {
-    pub fn new(cursor: Position, in_focus: bool, ctx: ViewContext<'a>) -> Self {
-        let selected = ctx.selected_pattern_index();
-        let active = ctx.active_pattern_index();
-        let lines_per_beat = ctx.lines_per_beat() as usize;
-        let is_playing = ctx.is_playing();
-        let current_line = if selected == active {
-            Some(ctx.current_line())
-        } else {
-            None
-        };
-
-        Self {
-            ctx,
-            current_line,
-            cursor,
-            lines_per_beat,
-            in_focus,
-            is_playing,
-        }
+    pub fn new(cursor: Position, focus: Focus, ctx: ViewContext<'a>) -> Self {
+        Self { ctx, cursor, focus }
     }
 
     fn render_mixer_controls(&self, track: &TrackView, area: Rect, buf: &mut Buffer) {
@@ -189,21 +170,21 @@ impl<'a> Editor<'a> {
                 })
                 .collect();
 
-            let line_style = if line % self.lines_per_beat == 0 {
+            let line_style = if line % self.ctx.lines_per_beat() as usize == 0 {
                 Style::default().bg(Color::Indexed(236))
             } else {
                 Style::default()
             };
             let input_style = |offset: usize| {
-                if self.in_focus
+                if matches!(self.focus, Focus::Editor)
                     && self.cursor.line == line
                     && self.cursor.column == column + offset
                 {
                     Style::default().bg(Color::Green).fg(Color::Black)
-                } else if self.current_line.unwrap_or(usize::MAX) == line
+                } else if self.is_current_line(line)
                     && offset == 0
                     && step.pitch.is_some()
-                    && self.is_playing
+                    && self.ctx.is_playing()
                 {
                     // Pitch input is highlighted when it's the currently active note
                     Style::default().bg(Color::Indexed(239)).fg(Color::White)
@@ -228,6 +209,14 @@ impl<'a> Editor<'a> {
 
             buf.set_spans(area.left(), y, &spans, area.width);
             y += 1;
+        }
+    }
+
+    fn is_current_line(&self, line: usize) -> bool {
+        if self.ctx.selected_pattern_index() != self.ctx.active_pattern_index() {
+            false
+        } else {
+            self.ctx.current_line() == line
         }
     }
 }
@@ -280,9 +269,9 @@ impl<'a> StatefulWidget for &Editor<'a> {
         let style = Style::default().fg(Color::Indexed(241));
         buf.set_string(left, area.top(), format!("{:>3}", pattern.len()), style);
         for (i, step) in steps.clone().enumerate() {
-            let style = if self.current_line.is_some() && self.current_line.unwrap() == step {
+            let style = if self.is_current_line(step) {
                 Style::default().bg(Color::Blue).fg(Color::White)
-            } else if step % self.lines_per_beat == 0 {
+            } else if step % self.ctx.lines_per_beat() as usize == 0 {
                 Style::default().bg(Color::Indexed(236))
             } else {
                 Style::default()
