@@ -38,7 +38,7 @@ static A: AllocDisabler = AllocDisabler;
 // Keep https://github.com/RustAudio/cpal/issues/508 in mind
 // when changing the sample rate.
 const SAMPLE_RATE: f64 = 44100.0;
-const FRAMES_PER_BUFFER: usize = 256;
+const FRAMES_PER_BUFFER: usize = 128;
 
 // Allocate buffer size x 2, because sometimes cpal requests more than the
 // configured buffer size when switching the output device.
@@ -100,7 +100,7 @@ fn run_audio(mut app_state: Output<AppState>, mut engine: Engine) -> Result<cpal
         move |output: &mut [f32], _: &cpal::OutputCallbackInfo| {
             assert_no_alloc(|| {
                 let buf_size = output.len() / 2;
-                engine.render(app_state.read(), &mut buf[..buf_size]);
+                engine.process(app_state.read(), &mut buf[..buf_size]);
                 let mut i = 0;
                 for frame in &mut buf[..buf_size] {
                     output[i] = frame.channel(0);

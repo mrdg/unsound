@@ -18,7 +18,7 @@ impl StepInput for Step {
     fn input(&mut self, pos: Position) -> Box<dyn Input + '_> {
         match pos.column % INPUTS_PER_STEP {
             0 => Box::new(PitchInput::new(&mut self.pitch)),
-            1 => Box::new(NumInput::new(&mut self.sound, 0, 0, 99, [1, 10])),
+            1 => Box::new(NumInput::new(&mut self.instrument, 0, 0, 99, [1, 10])),
             2 => Box::new(EffectInput::new(&mut self.effect1)),
             3 => effect_value_input(&mut self.effect1),
             4 => Box::new(EffectInput::new(&mut self.effect2)),

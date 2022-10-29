@@ -1,16 +1,18 @@
 use anyhow::{anyhow, Result};
 use atomic_float::AtomicF32;
 use camino::Utf8PathBuf;
+use lru::LruCache;
 use ringbuf::{Producer, RingBuffer};
 use triple_buffer::{Input, Output, TripleBuffer};
+use ulid::Ulid;
 
 use crate::audio::Stereo;
-use crate::engine::{self, Device as AudioDevice, Engine, INSTRUMENT_TRACKS};
+use crate::engine::{self, Engine, Plugin, INSTRUMENT_TRACKS};
 use crate::files::FileBrowser;
 use crate::params::Params;
 use crate::pattern::{Position, Step, StepSize, MAX_PATTERNS};
-use crate::sampler::{self, AudioFile, Sampler};
-use crate::{engine::EngineCommand, pattern::Pattern, sampler::Sound};
+use crate::sampler::{self, Sampler, ROOT_PITCH};
+use crate::{engine::EngineCommand, pattern::Pattern};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -24,9 +26,9 @@ pub struct App {
     state_buf: Input<AppState>,
     producer: Producer<EngineCommand>,
     pub file_browser: FileBrowser,
-    file_cache: HashMap<Utf8PathBuf, Arc<AudioFile>>,
-    id_generator: IdGenerator,
-    pub device_params: HashMap<DeviceID, Arc<dyn Params>>,
+    pub device_params: HashMap<DeviceId, Arc<dyn Params>>,
+    preview_cache: LruCache<Utf8PathBuf, DeviceId>,
+    preview_track_id: TrackId,
 }
 
 impl App {
@@ -50,8 +52,23 @@ impl App {
             SetBpm(bpm) => self.state.bpm = bpm,
             SetOct(oct) => self.state.octave = oct,
             LoadSound(idx, path) => {
-                let snd = self.load_sound(path)?;
-                self.state.sounds[idx] = Some(snd);
+                // TODO: keep settings from previous sampler?
+                let snd = sampler::load_file(&path)?;
+                let sampler = Box::new(Sampler::new(snd));
+                let sampler_id = DeviceId::new();
+                self.device_params.insert(sampler_id, sampler.params());
+
+                let cmd = EngineCommand::CreateInstrument(sampler_id, sampler);
+                self.send_to_engine(cmd)?;
+
+                if let Some(instr) = &self.state.instruments[idx] {
+                    self.send_to_engine(EngineCommand::DeleteInstrument(instr.id))?;
+                }
+
+                self.state.instruments[idx] = Some(Instrument {
+                    id: sampler_id,
+                    name: path.file_name().unwrap().to_string(),
+                });
             }
             LoopToggle(idx) => {
                 self.state.loop_range = match self.state.loop_range {
@@ -78,8 +95,26 @@ impl App {
                 }
             }
             PreviewSound(path) => {
-                let snd = self.load_sound(path)?;
-                self.send_to_engine(EngineCommand::PreviewSound(snd))?;
+                let device_id = if let Some(id) = self.preview_cache.get(&path) {
+                    *id
+                } else {
+                    let snd = sampler::load_file(&path)?;
+                    let sampler = Box::new(Sampler::new(snd));
+                    let sampler_id = DeviceId::new();
+                    self.preview_cache.put(path.clone(), sampler_id);
+                    self.send_to_engine(EngineCommand::CreateInstrument(sampler_id, sampler))?;
+                    sampler_id
+                };
+                if self.preview_cache.len() > 10 {
+                    if let Some((_, device_id)) = self.preview_cache.pop_lru() {
+                        self.send_to_engine(EngineCommand::DeleteInstrument(device_id))?;
+                    }
+                }
+                self.send_to_engine(EngineCommand::PlayNote(
+                    device_id,
+                    self.preview_track_id,
+                    ROOT_PITCH,
+                ))?;
             }
             SelectPattern(idx) => {
                 if idx < self.state.song.len() {
@@ -153,13 +188,11 @@ impl App {
                 let track = self.create_track(track_type)?;
                 self.state.tracks.insert(idx, track);
             }
-            ParamInc(track_idx, device_idx, param_idx, step_size) => {
-                let device_id = self.state.tracks[track_idx].devices[device_idx].id;
+            ParamInc(device_id, param_idx, step_size) => {
                 let params = self.device_params.get(&device_id).unwrap();
                 params.get_param(param_idx).incr(step_size);
             }
-            ParamDec(track_idx, device_idx, param_idx, step_size) => {
-                let device_id = self.state.tracks[track_idx].devices[device_idx].id;
+            ParamDec(device_id, param_idx, step_size) => {
                 let params = self.device_params.get(&device_id).unwrap();
                 params.get_param(param_idx).decr(step_size);
             }
@@ -169,28 +202,13 @@ impl App {
     }
 
     fn create_track(&mut self, track_type: TrackType) -> Result<Track> {
-        let track_id = self.id_generator.track();
+        let track_id = TrackId::new();
         let cmd = EngineCommand::CreateTrack(track_id, Box::new(engine::Track::new()));
         self.send_to_engine(cmd)?;
 
-        let mut devices = Vec::new();
-        if matches!(track_type, TrackType::Instrument) {
-            let sampler = Box::new(Sampler::new());
-            let params = sampler.params();
-            let sampler_id = self.id_generator.device();
-            self.device_params.insert(sampler_id, params);
-            self.send_to_engine(EngineCommand::CreateDevice(track_id, sampler_id, sampler))?;
-
-            let sampler = Device {
-                name: "Sampler".to_owned(),
-                id: sampler_id,
-            };
-            devices = vec![sampler];
-        }
-
         let track = Track {
             id: track_id,
-            devices,
+            effects: vec![],
             muted: false,
             track_type,
             volume: Volume::new(-6.0),
@@ -208,30 +226,9 @@ impl App {
         }
     }
 
-    fn load_sound(&mut self, path: Utf8PathBuf) -> Result<Sound> {
-        let file = if let Some(file) = self.file_cache.get(&path) {
-            file.clone()
-        } else {
-            // Sounds with only a single reference are not loaded in an instrument slot (and
-            // so cannot be cloned by the audio thread) so we can safely delete these
-            // from the cache.
-            self.file_cache.retain(|_, v| Arc::strong_count(v) > 1);
-
-            let file = Arc::new(sampler::load_file(&path)?);
-            self.file_cache.insert(path.clone(), file.clone());
-            file
-        };
-
-        Ok(Sound {
-            offset: file.offset,
-            path,
-            file,
-        })
-    }
-
-    fn next_pattern_id(&self) -> PatternID {
+    fn next_pattern_id(&self) -> PatternId {
         if self.state.patterns.is_empty() {
-            return PatternID(0);
+            return PatternId(0);
         }
         let mut max = 0;
         for id in self.state.patterns.keys() {
@@ -239,7 +236,7 @@ impl App {
                 max = id.0;
             }
         }
-        PatternID(max + 1)
+        PatternId(max + 1)
     }
 
     fn update_pattern<F>(&mut self, f: F)
@@ -269,23 +266,56 @@ pub struct EngineState {
 }
 
 #[derive(Clone)]
+pub struct Instrument {
+    pub name: String,
+    pub id: DeviceId,
+}
+
+#[derive(Clone)]
 pub struct AppState {
     pub lines_per_beat: u16,
     pub bpm: u16,
     pub octave: u16,
     pub is_playing: bool,
     pub selected_pattern: usize,
-    pub patterns: HashMap<PatternID, Arc<Pattern>>,
-    pub song: Vec<PatternID>,
+    pub patterns: HashMap<PatternId, Arc<Pattern>>,
+    pub song: Vec<PatternId>,
     pub loop_range: Option<(usize, usize)>,
-    pub sounds: Vec<Option<Sound>>,
+    pub instruments: Vec<Option<Instrument>>,
     pub tracks: Vec<Track>,
+}
+
+impl AppState {
+    pub fn pattern(&self, idx: usize) -> Option<&Arc<Pattern>> {
+        self.song.get(idx).and_then(|id| self.patterns.get(id))
+    }
+
+    pub fn next_pattern(&self, current: usize) -> usize {
+        let (start, end) = match self.loop_range {
+            Some(range) => range,
+            None => (0, self.song.len() - 1),
+        };
+        let mut next = current + 1;
+        if next > end {
+            next = start;
+        }
+        next
+    }
+
+    pub fn is_track_muted(&self, track: usize) -> bool {
+        self.tracks[track].muted
+    }
+
+    pub fn master_bus(&self) -> &Track {
+        // the master track always exists so it's ok to unwrap here
+        self.tracks.last().unwrap()
+    }
 }
 
 #[derive(Clone)]
 pub struct Track {
-    pub id: TrackID,
-    pub devices: Vec<Device>,
+    pub id: TrackId,
+    pub effects: Vec<Device>,
 
     pub track_type: TrackType,
     pub name: Option<String>,
@@ -310,7 +340,7 @@ impl Track {
 
 #[derive(Clone)]
 pub struct Device {
-    pub id: DeviceID,
+    pub id: DeviceId,
     pub name: String,
 }
 
@@ -335,9 +365,11 @@ pub fn new() -> Result<(App, Output<AppState>, Engine, Output<EngineState>)> {
         song: Vec::new(),
         selected_pattern: 0,
         loop_range: Some((0, 0)),
-        sounds: vec![None; INSTRUMENT_TRACKS],
+        instruments: vec![None; INSTRUMENT_TRACKS],
         tracks: Vec::new(),
     };
+
+    let preview_track_id = TrackId::new();
 
     // Triple buffers are used to share app state with the engine and vice versa. This should
     // ensure that both threads always have a coherent view of the other thread's state.
@@ -345,16 +377,19 @@ pub fn new() -> Result<(App, Output<AppState>, Engine, Output<EngineState>)> {
     let (engine_state_input, engine_state_output) = TripleBuffer::new(&engine_state).split();
 
     let (producer, consumer) = RingBuffer::<EngineCommand>::new(64).split();
-    let engine = Engine::new(engine_state, engine_state_input, consumer);
+    let engine = Engine::new(engine_state, engine_state_input, consumer, preview_track_id);
+
+    // We'll manage size manually so we can delete devices in the engine on eviction
+    let preview_cache = LruCache::unbounded();
 
     let mut app = App {
         state: app_state,
         state_buf: app_state_input,
         producer,
         file_browser: FileBrowser::with_path("./sounds")?,
-        file_cache: HashMap::new(),
-        id_generator: IdGenerator { current: 0 },
         device_params: HashMap::new(),
+        preview_track_id,
+        preview_cache,
     };
 
     let mut master_bus = app.create_track(TrackType::Bus)?;
@@ -388,8 +423,8 @@ pub enum Msg {
     VolumeDec(Option<usize>),
     SetVolume(Option<usize>, f64),
     CreateTrack(usize, TrackType),
-    ParamInc(usize, usize, usize, StepSize),
-    ParamDec(usize, usize, usize, StepSize),
+    ParamInc(DeviceId, usize, StepSize),
+    ParamDec(DeviceId, usize, StepSize),
 }
 
 impl Msg {
@@ -398,83 +433,10 @@ impl Msg {
     }
 }
 
-pub trait SharedState {
-    fn app(&self) -> &AppState;
-
-    fn lines_per_beat(&self) -> u16 {
-        self.app().lines_per_beat
-    }
-
-    fn bpm(&self) -> u16 {
-        self.app().bpm
-    }
-
-    fn is_playing(&self) -> bool {
-        self.app().is_playing
-    }
-
-    fn sounds(&self) -> &Vec<Option<Sound>> {
-        &self.app().sounds
-    }
-
-    fn tracks(&self) -> &Vec<Track> {
-        &self.app().tracks
-    }
-}
-
-#[derive(Clone, Copy)]
-pub struct AudioContext<'a> {
-    app_state: &'a AppState,
-}
-
-impl<'a> AudioContext<'a> {
-    pub fn new(app_state: &'a AppState) -> Self {
-        Self { app_state }
-    }
-
-    pub fn master_bus(&self) -> &Track {
-        // the master track always exists so it's ok to unwrap here
-        self.app_state.tracks.last().unwrap()
-    }
-
-    pub fn next_pattern(&self, current: usize) -> usize {
-        let (start, end) = match self.app_state.loop_range {
-            Some(range) => range,
-            None => (0, self.app_state.song.len() - 1),
-        };
-        let mut next = current + 1;
-        if next > end {
-            next = start;
-        }
-        next
-    }
-
-    pub fn is_track_muted(&self, track: usize) -> bool {
-        self.app_state.tracks[track].muted
-    }
-
-    pub fn sound(&self, idx: usize) -> &Option<Sound> {
-        self.sounds().get(idx).unwrap_or(&None)
-    }
-
-    pub fn pattern(&self, idx: usize) -> Option<&Arc<Pattern>> {
-        self.app()
-            .song
-            .get(idx)
-            .and_then(|id| self.app().patterns.get(id))
-    }
-}
-
-impl<'a> SharedState for AudioContext<'a> {
-    fn app(&self) -> &AppState {
-        self.app_state
-    }
-}
-
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
-pub struct PatternID(u64);
+pub struct PatternId(u64);
 
-impl Display for PatternID {
+impl Display for PatternId {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0)
     }
@@ -520,28 +482,20 @@ impl Volume {
     }
 }
 
-#[derive(Clone, Copy, Hash, PartialEq, Eq, Debug)]
-pub struct DeviceID(u64);
+#[derive(Clone, Copy, Hash, PartialEq, Eq, Debug, Default)]
+pub struct DeviceId(Ulid);
 
-#[derive(Clone, Copy, Hash, PartialEq, Eq, Debug)]
-pub struct TrackID(u64);
-
-struct IdGenerator {
-    current: u64,
+impl DeviceId {
+    pub fn new() -> Self {
+        Self(Ulid::new())
+    }
 }
 
-impl IdGenerator {
-    fn device(&mut self) -> DeviceID {
-        DeviceID(self.next())
-    }
+#[derive(Clone, Copy, Hash, PartialEq, Eq, Debug, Default)]
+pub struct TrackId(Ulid);
 
-    fn track(&mut self) -> TrackID {
-        TrackID(self.next())
-    }
-
-    fn next(&mut self) -> u64 {
-        let id = self.current;
-        self.current += 1;
-        id
+impl TrackId {
+    pub fn new() -> Self {
+        Self(Ulid::new())
     }
 }

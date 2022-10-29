@@ -1,20 +1,21 @@
-use crate::app::AudioContext;
+use crate::app::TrackId;
 use crate::audio::{Buffer, Frame, Stereo};
-use crate::engine::Device;
+use crate::engine::{Event, Plugin, ProcessContext, ProcessStatus};
 use crate::env::{Envelope, State as EnvelopeState};
 use crate::params::{self, format_millis, Param, ParamInfo, Params};
-use crate::pattern::{Effect, NoteEvent, DEFAULT_VELOCITY, NOTE_OFF};
+use crate::pattern::Note;
 use crate::SAMPLE_RATE;
 use anyhow::Result;
 use camino::Utf8PathBuf;
 use hound::WavReader;
 use param_derive::Params;
+use std::ops::Range;
 use std::sync::Arc;
 
 pub const ROOT_PITCH: u8 = 48;
 
 #[derive(Params)]
-struct SamplerParams {
+pub struct SamplerParams {
     env_attack: Param,
     env_decay: Param,
     env_sustain: Param,
@@ -30,6 +31,13 @@ impl SamplerParams {
             release: self.env_release.value(),
         }
     }
+}
+#[derive(Clone)]
+pub struct Adsr {
+    pub attack: f64,
+    pub decay: f64,
+    pub sustain: f64,
+    pub release: f64,
 }
 
 impl Default for SamplerParams {
@@ -58,61 +66,91 @@ impl Default for SamplerParams {
     }
 }
 
-struct Voice {
+pub struct Voice {
+    params: Arc<SamplerParams>,
     position: f32,
     state: VoiceState,
     pitch_ratio: f32,
     pitch: u8,
-    volume: f32,
+    velocity: f32,
     env: Envelope,
-    sample: Option<Arc<AudioFile>>,
+    sample: Arc<Buffer>,
     gate: f64,
 }
 
-#[derive(PartialEq, Debug)]
-enum VoiceState {
+#[derive(PartialEq, Eq, Debug)]
+pub enum VoiceState {
     Free,
-    Busy,
+    Busy(TrackId),
 }
 
 impl Voice {
-    fn new(params: &SamplerParams) -> Self {
+    fn new(params: Arc<SamplerParams>, sample: Arc<Buffer>) -> Self {
         let adsr = params.adsr();
         Self {
+            params,
             position: 0.0,
             pitch: 0,
-            volume: 0.0,
+            velocity: 0.0,
             pitch_ratio: 0.,
             state: VoiceState::Free,
-            env: Envelope::new(adsr.attack, adsr.decay, adsr.sustain, adsr.release),
-            sample: None,
+            env: Envelope::new(adsr),
+            sample,
             gate: 0.0,
         }
+    }
+
+    fn process(&mut self, buf: &mut [Stereo]) -> ProcessStatus {
+        let sample = self.sample.as_ref();
+        self.env.update(self.params.adsr());
+
+        for dst_frame in buf.iter_mut() {
+            let pos = self.position as usize;
+            let weight = self.position - pos as f32;
+            let inverse_weight = 1.0 - weight;
+
+            let mut frame = sample[pos] * inverse_weight;
+            if pos < sample.len() - 1 {
+                frame += sample[pos + 1] * weight;
+            }
+
+            *dst_frame += frame * self.velocity * self.env.value(self.gate) as f32;
+            self.position += self.pitch_ratio;
+            if self.position >= sample.len() as f32 {
+                self.state = VoiceState::Free;
+                return ProcessStatus::Idle;
+            }
+        }
+        if self.env.state == EnvelopeState::Idle {
+            self.state = VoiceState::Free;
+            return ProcessStatus::Idle;
+        }
+        ProcessStatus::Continue
+    }
+
+    fn note_off(&mut self) {
+        self.gate = 0.0;
     }
 }
 
 #[derive(Clone)]
 pub struct Sound {
-    pub path: Utf8PathBuf,
-    pub offset: usize,
-    pub file: Arc<AudioFile>,
+    offset: usize,
+    buf: Arc<Buffer>,
+    sample_rate: usize,
 }
 
-#[derive(Clone)]
-pub struct Adsr {
-    pub attack: f64,
-    pub decay: f64,
-    pub sustain: f64,
-    pub release: f64,
+impl Sound {
+    fn new(buf: Buffer, offset: usize, sample_rate: usize) -> Self {
+        Self {
+            buf: Arc::new(buf),
+            offset,
+            sample_rate,
+        }
+    }
 }
 
-pub struct AudioFile {
-    sample_rate: u32,
-    buf: Buffer,
-    pub offset: usize,
-}
-
-pub fn load_file(path: &Utf8PathBuf) -> Result<AudioFile> {
+pub fn load_file(path: &Utf8PathBuf) -> Result<Sound> {
     let mut wav = WavReader::open(path.clone())?;
     let wav_spec = wav.spec();
     let bit_depth = wav_spec.bits_per_sample as f32;
@@ -138,58 +176,106 @@ pub fn load_file(path: &Utf8PathBuf) -> Result<AudioFile> {
             break;
         }
     }
-    Ok(AudioFile {
-        sample_rate: wav_spec.sample_rate,
-        offset,
-        buf: samples,
-    })
+    Ok(Sound::new(samples, offset, wav_spec.sample_rate as usize))
 }
 
 pub struct Sampler {
     voices: Vec<Voice>,
+    events: Vec<Event>,
+    sound: Sound,
     params: Arc<SamplerParams>,
 }
 
 impl Sampler {
-    pub fn new() -> Self {
+    pub fn new(sound: Sound) -> Self {
         let mut voices = Vec::with_capacity(12);
-        let params = SamplerParams::default();
+        let params = Arc::new(SamplerParams::default());
         for _ in 0..voices.capacity() {
-            voices.push(Voice::new(&params));
+            voices.push(Voice::new(params.clone(), sound.buf.clone()));
         }
         Self {
             voices,
-            params: Arc::new(params),
+            events: Vec::with_capacity(64),
+            sound,
+            params,
         }
     }
 
-    pub fn note_on(&mut self, sound: &Sound, _ctx: AudioContext, pitch: u8, velocity: u8) {
+    fn note_on(&mut self, track_id: TrackId, pitch: u8, velocity: u8) {
         if let Some(voice) = self.voices.iter_mut().find(|v| v.state == VoiceState::Free) {
             voice.gate = 1.0;
-            voice.state = VoiceState::Busy;
-
-            let adsr = self.params.adsr();
-            voice.env = Envelope::new(adsr.attack, adsr.decay, adsr.sustain, adsr.release);
-
+            voice.state = VoiceState::Busy(track_id);
+            voice.env = Envelope::new(self.params.adsr());
             voice.pitch = pitch;
-            voice.volume = gain_factor(map(velocity.into(), (0.0, 127.0), (-60.0, 0.0)));
+            voice.velocity = gain_factor(map(velocity.into(), (0.0, 127.0), (-60.0, 0.0)));
 
             let pitch = pitch as i8 - ROOT_PITCH as i8;
             voice.pitch_ratio = f32::powf(2., pitch as f32 / 12.0)
-                * (sound.file.sample_rate as f32 / SAMPLE_RATE as f32);
-            voice.position = sound.offset as f32;
-            voice.sample = Some(sound.file.clone());
+                * (self.sound.sample_rate as f32 / SAMPLE_RATE as f32);
+            voice.position = self.sound.offset as f32;
         } else {
             eprintln!("dropped event");
         }
     }
 
-    fn release_voices(&mut self) {
-        for v in &mut self.voices {
-            if v.state == VoiceState::Busy {
-                v.gate = 0.0;
+    fn send_event(&mut self, ev: &Event) {
+        match ev.note {
+            Note::On(pitch, velocity) => self.note_on(ev.track_id, pitch, velocity),
+            Note::Off => {
+                for voice in &mut self.voices.iter_mut() {
+                    if let VoiceState::Busy(track_id) = voice.state {
+                        if track_id == ev.track_id {
+                            voice.note_off();
+                        }
+                    }
+                }
             }
         }
+    }
+
+    fn process_block(&mut self, ctx: &mut ProcessContext, range: &Range<usize>) -> ProcessStatus {
+        let mut status = ProcessStatus::Idle;
+        for voice in &mut self.voices.iter_mut() {
+            if let VoiceState::Busy(track_id) = voice.state {
+                let buf = ctx.track_buffer(track_id, range);
+                let voice_status = voice.process(buf);
+                if let ProcessStatus::Continue = voice_status {
+                    status = voice_status
+                }
+            }
+        }
+        status
+    }
+}
+
+impl Plugin for Sampler {
+    fn process(&mut self, ctx: &mut ProcessContext) -> ProcessStatus {
+        let mut last_offset = 0;
+        let mut range = 0..ctx.num_frames;
+        for i in 0..self.events.len() {
+            let ev = self.events[i];
+            // Don't call process until we've read all events with the same
+            // offset (e.g. a chord)
+            if ev.offset != last_offset {
+                range.end = ev.offset;
+                self.process_block(ctx, &range);
+                range.start = range.end;
+                range.end = ctx.num_frames;
+            }
+            last_offset = ev.offset;
+            self.send_event(&ev);
+        }
+        range.end = ctx.num_frames;
+        self.events.clear();
+        self.process_block(ctx, &range)
+    }
+
+    fn params(&self) -> Arc<dyn Params> {
+        self.params.clone()
+    }
+
+    fn send_event(&mut self, event: Event) {
+        self.events.push(event);
     }
 }
 
@@ -197,92 +283,50 @@ fn gain_factor(db: f32) -> f32 {
     f32::powf(10.0, db / 20.0)
 }
 
-impl Device for Sampler {
-    fn params(&self) -> Arc<dyn Params> {
-        self.params.clone()
-    }
-
-    fn render(&mut self, _ctx: AudioContext, buffer: &mut [Stereo]) {
-        let adsr = self.params.adsr();
-        for voice in &mut self.voices {
-            if voice.state == VoiceState::Free {
-                continue;
-            }
-            let sample = voice.sample.as_ref().unwrap();
-            for dst_frame in buffer.iter_mut() {
-                let pos = voice.position as usize;
-                let weight = voice.position - pos as f32;
-                let inverse_weight = 1.0 - weight;
-
-                let frame = sample.buf[pos];
-                let next_frame = sample.buf[pos + 1];
-                let new_frame = frame * inverse_weight + next_frame * weight;
-
-                voice.env.update(&adsr);
-                *dst_frame += new_frame * voice.volume * voice.env.value(voice.gate) as f32;
-
-                voice.position += voice.pitch_ratio;
-                if voice.position >= (sample.buf.len() - 1) as f32 {
-                    voice.state = VoiceState::Free;
-                    voice.sample = None;
-                    break;
-                }
-            }
-            if voice.env.state == EnvelopeState::Idle {
-                voice.state = VoiceState::Free;
-                voice.sample = None;
-            }
-        }
-    }
-
-    fn send_event(&mut self, ctx: AudioContext, event: &NoteEvent) {
-        let mut velocity: Option<u8> = None;
-        let mut chord: [Option<u8>; 3] = [None; 3];
-
-        for effect in [event.fx1, event.fx2].iter().flatten() {
-            match effect {
-                Effect::Chord(c) => {
-                    if let Some(c) = c {
-                        chord = make_chord(*c);
-                    }
-                }
-                Effect::Velocity(v) => {
-                    if let Some(v) = v {
-                        velocity = Some(*v);
-                    }
-                }
-                // Offset is handled during sequencing
-                Effect::Offset(_) => {}
-            }
-        }
-        if event.pitch == NOTE_OFF {
-            self.release_voices();
-        } else if let Some(sound) = ctx.sound(event.sound.into()) {
-            self.release_voices();
-            let velocity = velocity.unwrap_or(DEFAULT_VELOCITY);
-            self.note_on(sound, ctx, event.pitch, velocity);
-            for offset in chord.iter().flatten() {
-                self.note_on(sound, ctx, event.pitch + offset, velocity);
-            }
-        }
-    }
-}
-
 fn map(v: f32, from: (f32, f32), to: (f32, f32)) -> f32 {
     (v - from.0) * (to.1 - to.0) / (from.1 - from.0) + to.0
 }
 
-fn make_chord(n: i16) -> [Option<u8>; 3] {
-    let mut n = n;
-    let mut d = 100;
-    let mut chord: [Option<u8>; 3] = [None; 3];
-    for offset in &mut chord {
-        let semitones = n / d;
-        if semitones > 0 {
-            *offset = Some(semitones as u8)
-        }
-        n %= d;
-        d /= 10;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::Track;
+    use crate::pattern::Note;
+    use std::collections::HashMap;
+
+    #[test]
+    fn sampler_process() {
+        let mut tracks = HashMap::new();
+        let track1 = TrackId::new();
+        let track2 = TrackId::new();
+
+        tracks.insert(track1, Box::new(Track::new()));
+        tracks.insert(track2, Box::new(Track::new()));
+        let sample = Stereo::new([0.5, 0.5]);
+
+        let sound = Sound::new(vec![sample; 16], 0, 44100);
+        let mut sampler = Sampler::new(sound);
+        let note = Note::On(ROOT_PITCH, 127);
+
+        let ev = Event::new(8, track1, note);
+        Plugin::send_event(&mut sampler, ev);
+
+        let ev = Event::new(16, track2, note);
+        Plugin::send_event(&mut sampler, ev);
+
+        let buf_size = 32;
+        let mut ctx = ProcessContext::new(&mut tracks, buf_size);
+        sampler.process(&mut ctx);
+
+        let buf = ctx.track_buffer(track1, &(0..buf_size));
+        assert_eq!(vec![Stereo::ZERO; 8], buf[0..8]);
+        // TODO: check for the actual sample value here, but easier if we can disable
+        // envelope.
+        assert_ne!(vec![Stereo::ZERO; 16], buf[8..24]);
+        assert_eq!(vec![Stereo::ZERO; 8], buf[24..32]);
+
+        let buf = ctx.track_buffer(track2, &(0..buf_size));
+        assert_eq!(vec![Stereo::ZERO; 16], buf[0..16]);
+        assert_ne!(vec![Stereo::ZERO; 16], buf[16..32]);
     }
-    chord
 }

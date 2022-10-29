@@ -21,6 +21,7 @@ impl Param {
             info,
         }
     }
+
     pub fn incr(&self, step_size: StepSize) {
         let step = self.info.step(step_size);
         let new = f64::min(self.info.max, self.value() + step);

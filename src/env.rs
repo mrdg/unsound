@@ -23,20 +23,20 @@ pub struct Envelope {
     target: f64,
     sustain_val: f64,
 
-    pub attack: f64,
-    pub decay: f64,
-    pub sustain: f64,
-    pub release: f64,
+    attack: f64,
+    decay: f64,
+    sustain: f64,
+    release: f64,
 }
 
 impl Envelope {
-    pub fn new(attack: f64, decay: f64, sustain: f64, release: f64) -> Envelope {
+    pub fn new(adsr: Adsr) -> Envelope {
         Envelope {
             state: State::Idle,
-            attack,
-            decay,
-            sustain,
-            release,
+            attack: adsr.attack,
+            decay: adsr.decay,
+            sustain: adsr.sustain,
+            release: adsr.release,
             out: 0.0,
             prev_gate: 0.0,
             pole: 0.0,
@@ -45,7 +45,7 @@ impl Envelope {
         }
     }
 
-    pub fn update(&mut self, adsr: &Adsr) {
+    pub fn update(&mut self, adsr: Adsr) {
         self.attack = adsr.attack;
         self.decay = adsr.decay;
         self.sustain = adsr.sustain;

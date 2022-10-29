@@ -29,7 +29,7 @@ pub struct View {
     cursor: Cursor,
     focus: Focus,
     files: List,
-    sounds: List,
+    instruments: List,
     params: List,
     tracks: List,
     devices: List,
@@ -44,7 +44,7 @@ impl View {
         Self {
             frames: 0,
             cursor: Cursor::default(),
-            sounds: List::default(),
+            instruments: List::default(),
             tracks: List::default(),
             devices: List::default(),
             params: List::default(),
@@ -53,7 +53,7 @@ impl View {
             editor: EditorState::default(),
             focus: Focus::Editor,
             command: String::new(),
-            project_tree_state: ProjectTreeState::Sounds,
+            project_tree_state: ProjectTreeState::Instruments,
         }
     }
 }
@@ -277,11 +277,11 @@ impl View {
                     .highlight_style(highlight_style);
                 f.render_stateful_widget(devices, area, &mut self.devices.state);
             }
-            ProjectTreeState::DeviceParams(track_idx, device_idx) => {
+            ProjectTreeState::InstrumentParams(instrument_idx) => {
                 // TODO: maybe use a table here to align values?
                 let w = (area.width as f32 * 0.6) as usize;
                 let params: Vec<ListItem> = ctx
-                    .params(track_idx, device_idx)
+                    .params(instrument_idx)
                     .iter()
                     .enumerate()
                     .map(|(i, p)| {
@@ -295,44 +295,41 @@ impl View {
                         )))
                     })
                     .collect();
-                let device_name: &str = ctx.devices(track_idx)[device_idx].name.as_ref();
-                let track_name = ctx.tracks()[track_idx]
+                let name: &str = ctx.instruments()[instrument_idx]
+                    .as_ref()
+                    .unwrap()
                     .name
-                    .clone()
-                    .unwrap_or(format!("Track {track_idx}"));
+                    .as_ref();
 
                 let params = ListView::new(params)
-                    .block(
-                        Block::default()
-                            .borders(Borders::ALL)
-                            .title(format!("{track_name} > {device_name}")),
-                    )
+                    .block(Block::default().borders(Borders::ALL).title(name))
                     .highlight_style(highlight_style);
                 f.render_stateful_widget(params, area, &mut self.params.state);
             }
-            ProjectTreeState::Sounds => {
-                // Sounds
-                let sounds: Vec<ListItem> = ctx
-                    .sounds()
+            ProjectTreeState::Instruments => {
+                let instruments: Vec<ListItem> = ctx
+                    .instruments()
                     .iter()
                     .enumerate()
-                    .map(|(i, snd)| {
-                        let selected = if i == self.sounds.pos && self.focus != Focus::ProjectTree {
-                            Span::raw(">")
-                        } else {
-                            Span::raw(" ")
-                        };
-                        let snd_desc = snd
+                    .map(|(i, instr)| {
+                        let selected =
+                            if i == self.instruments.pos && self.focus != Focus::ProjectTree {
+                                Span::raw(">")
+                            } else {
+                                Span::raw(" ")
+                            };
+                        let name = instr
                             .as_ref()
-                            .map_or("", |snd| snd.path.file_name().unwrap_or(""));
-                        let snd_desc = Span::raw(format!(" {:0width$} {}", i, snd_desc, width = 2));
+                            .map(|instr| instr.name.as_ref())
+                            .unwrap_or("");
+                        let snd_desc = Span::raw(format!(" {:0width$} {}", i, name, width = 2));
                         ListItem::new(Spans::from(vec![selected, snd_desc]))
                     })
                     .collect();
-                let sounds = ListView::new(sounds)
-                    .block(Block::default().borders(Borders::ALL).title("Sounds"))
+                let instruments = ListView::new(instruments)
+                    .block(Block::default().borders(Borders::ALL).title("Instruments"))
                     .highlight_style(highlight_style);
-                f.render_stateful_widget(sounds, area, &mut self.sounds.state);
+                f.render_stateful_widget(instruments, area, &mut self.instruments.state);
             }
         };
     }
@@ -528,8 +525,8 @@ impl View {
             Focus::ProjectTree => return self.handle_project_tree_input(key, ctx),
             Focus::FileLoader => {
                 match key {
-                    Key::Ctrl('u') => self.sounds.prev(),
-                    Key::Ctrl('d') => self.sounds.next(),
+                    Key::Ctrl('u') => self.instruments.prev(),
+                    Key::Ctrl('d') => self.instruments.next(),
                     Key::Char('u') => {
                         if let Some(dir) = ctx.file_browser.dir.parent() {
                             self.files = List::default();
@@ -546,7 +543,7 @@ impl View {
                             self.files = List::default();
                             ChangeDir(selected_path.to_path_buf())
                         } else {
-                            LoadSound(self.sounds.pos, selected_path.to_path_buf())
+                            LoadSound(self.instruments.pos, selected_path.to_path_buf())
                         };
                         return Ok(msg);
                     }
@@ -559,11 +556,11 @@ impl View {
         Ok(Noop)
     }
 
-    fn handle_project_tree_input(&mut self, key: Key, _ctx: ViewContext) -> Result<Msg> {
+    fn handle_project_tree_input(&mut self, key: Key, ctx: ViewContext) -> Result<Msg> {
         use Msg::*;
         match key {
             Key::Char('s') => {
-                self.project_tree_state = ProjectTreeState::Sounds;
+                self.project_tree_state = ProjectTreeState::Instruments;
                 return Ok(Noop);
             }
             Key::Char('t') => {
@@ -582,53 +579,30 @@ impl View {
                 };
                 Ok(Noop)
             }
-            ProjectTreeState::DeviceParams(track_idx, device_idx) => {
+            ProjectTreeState::InstrumentParams(instr_idx) => {
+                let device_id = ctx.instruments()[instr_idx].as_ref().unwrap().id;
                 match key {
                     Key::Char('u') => {
-                        self.project_tree_state = ProjectTreeState::Devices(track_idx)
+                        self.project_tree_state = ProjectTreeState::Instruments;
                     }
                     Key::Char('[') => {
-                        return Ok(ParamInc(
-                            track_idx,
-                            device_idx,
-                            self.params.pos,
-                            StepSize::Default,
-                        ))
+                        return Ok(ParamInc(device_id, self.params.pos, StepSize::Default))
                     }
                     Key::Char(']') => {
-                        return Ok(ParamDec(
-                            track_idx,
-                            device_idx,
-                            self.params.pos,
-                            StepSize::Default,
-                        ))
+                        return Ok(ParamDec(device_id, self.params.pos, StepSize::Default))
                     }
                     Key::Char('{') => {
-                        return Ok(ParamInc(
-                            track_idx,
-                            device_idx,
-                            self.params.pos,
-                            StepSize::Large,
-                        ))
+                        return Ok(ParamInc(device_id, self.params.pos, StepSize::Large))
                     }
                     Key::Char('}') => {
-                        return Ok(ParamDec(
-                            track_idx,
-                            device_idx,
-                            self.params.pos,
-                            StepSize::Large,
-                        ))
+                        return Ok(ParamDec(device_id, self.params.pos, StepSize::Large))
                     }
                     _ => self.params.input(key),
                 };
                 Ok(Noop)
             }
-            ProjectTreeState::Devices(track_idx) => {
+            ProjectTreeState::Devices(_track_idx) => {
                 match key {
-                    Key::Char('\n') => {
-                        self.project_tree_state =
-                            ProjectTreeState::DeviceParams(track_idx, self.devices.pos);
-                    }
                     Key::Char('u') => {
                         self.project_tree_state = ProjectTreeState::Tracks;
                     }
@@ -636,10 +610,14 @@ impl View {
                 };
                 Ok(Noop)
             }
-            ProjectTreeState::Sounds => {
+            ProjectTreeState::Instruments => {
                 match key {
+                    Key::Char('\n') => {
+                        self.project_tree_state =
+                            ProjectTreeState::InstrumentParams(self.instruments.pos);
+                    }
                     Key::Char('l') => self.focus = Focus::FileLoader,
-                    _ => self.sounds.input(key),
+                    _ => self.instruments.input(key),
                 };
                 Ok(Noop)
             }
@@ -656,14 +634,14 @@ impl View {
         self.patterns.set_len(ctx.song().len());
         self.files.set_len(ctx.file_browser.entries.len());
         match self.project_tree_state {
-            ProjectTreeState::DeviceParams(track, device) => {
-                self.params.set_len(ctx.params(track, device).len());
+            ProjectTreeState::InstrumentParams(instrument) => {
+                self.params.set_len(ctx.params(instrument).len());
             }
             ProjectTreeState::Devices(track) => {
                 self.devices.set_len(ctx.devices(track).len());
             }
-            ProjectTreeState::Sounds => {
-                self.sounds.set_len(ctx.sounds().len());
+            ProjectTreeState::Instruments => {
+                self.instruments.set_len(ctx.instruments().len());
             }
             ProjectTreeState::Tracks => {
                 self.tracks.set_len(ctx.tracks().len());
@@ -673,7 +651,7 @@ impl View {
     }
 }
 
-#[derive(PartialEq, Debug, Clone, Copy)]
+#[derive(PartialEq, Eq, Debug, Clone, Copy)]
 pub enum Focus {
     Editor,
     CommandLine,
@@ -683,10 +661,10 @@ pub enum Focus {
 }
 
 enum ProjectTreeState {
-    Sounds,
+    Instruments,
     Tracks,
     Devices(usize),
-    DeviceParams(usize, usize),
+    InstrumentParams(usize),
 }
 
 fn shorten_path(path: &Utf8PathBuf, width: usize) -> String {

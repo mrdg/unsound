@@ -78,7 +78,7 @@ impl Pattern {
 
     // For each track in the pattern, return notes that should be played on the given tick. The
     // tick is relative to the start of the pattern.
-    pub fn notes(&self, tick: usize) -> impl Iterator<Item = NoteEvent> + '_ {
+    pub fn events(&self, tick: usize) -> impl Iterator<Item = NoteEvent> + '_ {
         let line = tick / TICKS_PER_LINE;
         self.tracks.iter().enumerate().flat_map(move |(i, track)| {
             let step = &track.steps[line];
@@ -90,19 +90,29 @@ impl Pattern {
                 line_tick + offset as usize == tick
             });
 
-            if (!has_offset && line_tick == tick) || offset_match {
-                step.pitch.map(|pitch| NoteEvent {
-                    pitch,
-                    track: i as u8,
-                    // TODO: this will break when deleting tracks. Probably better to just
-                    // set the sound field when a pitch is entered.
-                    sound: step.sound.unwrap_or(i as u8),
-                    fx1: step.effect1,
-                    fx2: step.effect2,
-                })
+            // TODO: ensure that instrument is always set when pitch is set. Otherwise the behavior
+            // here becomes inconsistent when editing the instrument list.
+            let instrument = step.instrument.unwrap_or(i as u8) as usize;
+            let velocity = step.velocity();
+
+            let notes = if (!has_offset && line_tick == tick) || offset_match {
+                let iter = step.notes().map(move |pitch| {
+                    let note = if pitch == NOTE_OFF {
+                        Note::Off
+                    } else {
+                        Note::On(pitch, velocity)
+                    };
+                    NoteEvent {
+                        note,
+                        track: i,
+                        instrument,
+                    }
+                });
+                Some(iter)
             } else {
                 None
-            }
+            };
+            notes.into_iter().flatten()
         })
     }
 }
@@ -112,12 +122,35 @@ pub struct Track {
     steps: Vec<Step>,
 }
 
+#[derive(Clone)]
 pub struct NoteEvent {
-    pub pitch: u8,
-    pub sound: u8,
-    pub track: u8,
-    pub fx1: Option<Effect>,
-    pub fx2: Option<Effect>,
+    pub note: Note,
+    pub instrument: usize,
+    pub track: usize,
+}
+
+#[derive(Clone, Copy)]
+pub enum Note {
+    On(u8, u8),
+    Off,
+}
+
+struct ChordIter {
+    root: u8,
+    chord: i16,
+}
+
+impl Iterator for ChordIter {
+    type Item = u8;
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.chord > 0 {
+            let offset = self.chord % 10;
+            self.chord /= 10;
+            Some(self.root + offset as u8)
+        } else {
+            None
+        }
+    }
 }
 
 #[derive(Copy, Clone)]
@@ -129,16 +162,49 @@ pub enum StepSize {
 #[derive(Copy, Clone, Debug, Default)]
 pub struct Step {
     pub pitch: Option<u8>,
-    pub sound: Option<u8>,
+    pub instrument: Option<u8>,
     pub effect1: Option<Effect>,
     pub effect2: Option<Effect>,
 }
 
 impl Step {
+    fn notes(&self) -> impl Iterator<Item = u8> {
+        let chord = if let Some(chord) = self.chord() {
+            let iter = ChordIter {
+                root: self.pitch.unwrap_or(0),
+                chord,
+            };
+            Some(iter)
+        } else {
+            None
+        };
+        self.pitch.into_iter().chain(chord.into_iter().flatten())
+    }
+
+    fn chord(&self) -> Option<i16> {
+        for effect in self.effects() {
+            if let Effect::Chord(Some(v)) = effect {
+                return Some(*v);
+            }
+        }
+        None
+    }
+
+    fn velocity(&self) -> u8 {
+        for effect in self.effects() {
+            if let Effect::Velocity(Some(v)) = effect {
+                return *v;
+            }
+        }
+        DEFAULT_VELOCITY
+    }
+
+    fn effects(&self) -> impl Iterator<Item = &Effect> {
+        self.effect1.iter().chain(self.effect2.iter())
+    }
+
     fn offsets(&self) -> impl Iterator<Item = u8> + '_ {
-        self.effect1
-            .iter()
-            .chain(self.effect2.iter())
+        self.effects()
             .flat_map(|effect| {
                 if let Effect::Offset(offset) = effect {
                     Some(*offset)
@@ -201,10 +267,20 @@ mod tests {
             pattern.set_step(position(track, 0), step);
         }
 
-        let notes: Vec<NoteEvent> = pattern.notes(0).collect();
-        let pitches: Vec<u8> = notes.iter().map(|n| n.pitch).collect();
+        let notes: Vec<NoteEvent> = pattern.events(0).collect();
+        let pitches: Vec<u8> = notes
+            .iter()
+            .map(|n| {
+                if let Note::On(pitch, _) = n.note {
+                    Some(pitch)
+                } else {
+                    None
+                }
+            })
+            .flatten()
+            .collect();
         assert_eq!(vec![60, 60], pitches);
-        let tracks: Vec<u8> = notes.iter().map(|n| n.track).collect();
+        let tracks: Vec<usize> = notes.iter().map(|n| n.track).collect();
         assert_eq!(vec![0, 1], tracks);
     }
 
@@ -215,7 +291,7 @@ mod tests {
         step.pitch = Some(60);
         step.effect1 = Some(Effect::Offset(Some(2)));
         pattern.set_step(position(0, 0), step);
-        let notes: Vec<NoteEvent> = pattern.notes(2).collect();
+        let notes: Vec<NoteEvent> = pattern.events(2).collect();
         assert_eq!(1, notes.len());
     }
 
@@ -226,7 +302,7 @@ mod tests {
         step.pitch = Some(60);
         step.effect1 = Some(Effect::Offset(Some(2)));
         pattern.set_step(position(0, 0), step);
-        let notes: Vec<NoteEvent> = pattern.notes(0).collect();
+        let notes: Vec<NoteEvent> = pattern.events(0).collect();
         assert_eq!(0, notes.len());
     }
 
@@ -239,10 +315,10 @@ mod tests {
         step.effect2 = Some(Effect::Offset(Some(3)));
 
         pattern.set_step(position(0, 0), step);
-        let notes: Vec<NoteEvent> = pattern.notes(2).collect();
+        let notes: Vec<NoteEvent> = pattern.events(2).collect();
         assert_eq!(1, notes.len());
 
-        let notes: Vec<NoteEvent> = pattern.notes(3).collect();
+        let notes: Vec<NoteEvent> = pattern.events(3).collect();
         assert_eq!(1, notes.len());
     }
 }

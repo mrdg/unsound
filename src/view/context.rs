@@ -1,9 +1,10 @@
-use crate::app::{AppState, Device, DeviceID, EngineState, PatternID, Track, TrackType};
+use crate::app::{
+    AppState, Device, DeviceId, EngineState, Instrument, PatternId, Track, TrackType,
+};
 use crate::engine::TICKS_PER_LINE;
 use crate::files::FileBrowser;
 use crate::params::Params;
 use crate::pattern::{Pattern, Position, Step};
-use crate::sampler::Sound;
 use crate::view;
 use crate::view::pattern::StepInput;
 
@@ -13,7 +14,7 @@ use std::sync::Arc;
 
 #[derive(Copy, Clone)]
 pub struct ViewContext<'a> {
-    device_params: &'a HashMap<DeviceID, Arc<dyn Params>>,
+    device_params: &'a HashMap<DeviceId, Arc<dyn Params>>,
     app_state: &'a AppState,
     engine_state: &'a EngineState,
     pub file_browser: &'a FileBrowser,
@@ -21,7 +22,7 @@ pub struct ViewContext<'a> {
 
 impl<'a> ViewContext<'a> {
     pub fn new(
-        device_params: &'a HashMap<DeviceID, Arc<dyn Params>>,
+        device_params: &'a HashMap<DeviceId, Arc<dyn Params>>,
         app_state: &'a AppState,
         engine_state: &'a EngineState,
         file_browser: &'a FileBrowser,
@@ -50,17 +51,17 @@ impl<'a> ViewContext<'a> {
         self.app().is_playing
     }
 
-    pub fn sounds(&self) -> &Vec<Option<Sound>> {
-        &self.app().sounds
+    pub fn instruments(&self) -> &Vec<Option<Instrument>> {
+        &self.app().instruments
     }
 
     pub fn tracks(&self) -> &Vec<Track> {
         &self.app().tracks
     }
 
-    pub fn params(&self, track_idx: usize, device_idx: usize) -> &Arc<dyn Params> {
-        let device = &self.app_state.tracks[track_idx].devices[device_idx];
-        self.device_params.get(&device.id).unwrap()
+    pub fn params(&self, track_idx: usize) -> &Arc<dyn Params> {
+        let device = &self.app_state.instruments[track_idx].as_ref().unwrap().id;
+        self.device_params.get(device).unwrap()
     }
 
     pub fn octave(&self) -> u16 {
@@ -78,7 +79,7 @@ impl<'a> ViewContext<'a> {
     }
 
     pub fn devices(&self, track_idx: usize) -> &Vec<Device> {
-        &self.app_state.tracks[track_idx].devices
+        &self.app_state.tracks[track_idx].effects
     }
 
     pub fn current_line(&self) -> usize {
@@ -110,7 +111,7 @@ impl<'a> ViewContext<'a> {
         &steps[range.start..range.end]
     }
 
-    pub fn song(&self) -> &Vec<PatternID> {
+    pub fn song(&self) -> &Vec<PatternId> {
         &self.app().song
     }
 

@@ -151,7 +151,7 @@ impl<'a> Editor<'a> {
                 None => "---",
             };
 
-            let snd = match step.sound {
+            let snd = match step.instrument {
                 Some(v) => format!("{:0width$}", v, width = 2),
                 None => String::from("--"),
             };

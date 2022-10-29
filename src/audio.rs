@@ -1,6 +1,6 @@
 use std::ops::{Add, AddAssign, Div, Mul, Sub, SubAssign};
 
-#[derive(Debug, PartialEq, Clone, Copy)]
+#[derive(Debug, PartialEq, PartialOrd, Clone, Copy)]
 pub struct Frame<const N: usize>([f32; N]);
 
 impl<const N: usize> Frame<N> {
