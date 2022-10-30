@@ -1,12 +1,11 @@
 use anyhow::{anyhow, Result};
-use atomic_float::AtomicF32;
+use atomic_float::AtomicF64;
 use camino::Utf8PathBuf;
 use lru::LruCache;
 use ringbuf::{Producer, RingBuffer};
 use triple_buffer::{Input, Output, TripleBuffer};
 use ulid::Ulid;
 
-use crate::audio::Stereo;
 use crate::engine::{self, Engine, Plugin, INSTRUMENT_TRACKS};
 use crate::files::FileBrowser;
 use crate::params::Params;
@@ -184,9 +183,14 @@ impl App {
             VolumeInc(track) => self.track_volume(track).inc(),
             VolumeDec(track) => self.track_volume(track).dec(),
             SetVolume(track, value) => self.track_volume(track).set(value),
-            CreateTrack(idx, track_type) => {
-                let track = self.create_track(track_type)?;
-                self.state.tracks.insert(idx, track);
+            CreateTrack(idx) => {
+                let track = engine::Track::new();
+                let volume = Volume::new(-6.0, track.volume.clone());
+                let rms = track.rms_out.clone();
+                let track_info = Track::new(volume, rms);
+                let cmd = EngineCommand::CreateTrack(track_info.id, Box::new(track));
+                self.send_to_engine(cmd)?;
+                self.state.tracks.insert(idx, track_info);
             }
             ParamInc(device_id, param_idx, step_size) => {
                 let params = self.device_params.get(&device_id).unwrap();
@@ -199,23 +203,6 @@ impl App {
         }
 
         Ok(())
-    }
-
-    fn create_track(&mut self, track_type: TrackType) -> Result<Track> {
-        let track_id = TrackId::new();
-        let cmd = EngineCommand::CreateTrack(track_id, Box::new(engine::Track::new()));
-        self.send_to_engine(cmd)?;
-
-        let track = Track {
-            id: track_id,
-            effects: vec![],
-            muted: false,
-            track_type,
-            volume: Volume::new(-6.0),
-            name: None,
-            rms: [Arc::new(AtomicF32::new(0.0)), Arc::new(AtomicF32::new(0.0))],
-        };
-        Ok(track)
     }
 
     fn track_volume(&mut self, track: Option<usize>) -> &mut Volume {
@@ -316,25 +303,31 @@ impl AppState {
 pub struct Track {
     pub id: TrackId,
     pub effects: Vec<Device>,
-
     pub track_type: TrackType,
     pub name: Option<String>,
     pub volume: Volume,
     pub muted: bool,
-    rms: [Arc<AtomicF32>; 2],
+    pub rms: Arc<[AtomicF64; 2]>,
 }
 
 impl Track {
-    pub fn rms(&self) -> (f32, f32) {
-        (
-            self.rms[0].load(Ordering::Relaxed),
-            self.rms[1].load(Ordering::Relaxed),
-        )
+    fn new(volume: Volume, rms: Arc<[AtomicF64; 2]>) -> Self {
+        Self {
+            id: TrackId::new(),
+            volume,
+            effects: vec![],
+            track_type: TrackType::Instrument,
+            name: None,
+            muted: false,
+            rms,
+        }
     }
 
-    pub fn update_rms(&self, rms: Stereo) {
-        self.rms[0].store(rms.channel(0), Ordering::Relaxed);
-        self.rms[1].store(rms.channel(1), Ordering::Relaxed);
+    pub fn rms(&self) -> (f32, f32) {
+        (
+            self.rms[0].load(Ordering::Relaxed) as f32,
+            self.rms[1].load(Ordering::Relaxed) as f32,
+        )
     }
 }
 
@@ -356,7 +349,7 @@ pub fn new() -> Result<(App, Output<AppState>, Engine, Output<EngineState>)> {
         current_tick: 0,
     };
 
-    let app_state = AppState {
+    let mut app_state = AppState {
         bpm: 120,
         lines_per_beat: 4,
         octave: 4,
@@ -376,13 +369,28 @@ pub fn new() -> Result<(App, Output<AppState>, Engine, Output<EngineState>)> {
     let (app_state_input, app_state_output) = TripleBuffer::new(&app_state).split();
     let (engine_state_input, engine_state_output) = TripleBuffer::new(&engine_state).split();
 
+    // Create master track
+    let master = engine::Track::default();
+    let volume = Volume::new(-6.0, master.volume.clone());
+    let rms = master.rms_out.clone();
+    let mut track = Track::new(volume, rms);
+    track.name = Some(String::from("Master"));
+    track.track_type = TrackType::Bus;
+    app_state.tracks.push(track);
+
     let (producer, consumer) = RingBuffer::<EngineCommand>::new(64).split();
-    let engine = Engine::new(engine_state, engine_state_input, consumer, preview_track_id);
+    let engine = Engine::new(
+        engine_state,
+        engine_state_input,
+        consumer,
+        master,
+        preview_track_id,
+    );
 
     // We'll manage size manually so we can delete devices in the engine on eviction
     let preview_cache = LruCache::unbounded();
 
-    let mut app = App {
+    let app = App {
         state: app_state,
         state_buf: app_state_input,
         producer,
@@ -391,10 +399,6 @@ pub fn new() -> Result<(App, Output<AppState>, Engine, Output<EngineState>)> {
         preview_track_id,
         preview_cache,
     };
-
-    let mut master_bus = app.create_track(TrackType::Bus)?;
-    master_bus.name = Some("Master".to_owned());
-    app.state.tracks.push(master_bus);
     Ok((app, app_state_output, engine, engine_state_output))
 }
 
@@ -422,7 +426,7 @@ pub enum Msg {
     VolumeInc(Option<usize>),
     VolumeDec(Option<usize>),
     SetVolume(Option<usize>, f64),
-    CreateTrack(usize, TrackType),
+    CreateTrack(usize),
     ParamInc(DeviceId, usize, StepSize),
     ParamDec(DeviceId, usize, StepSize),
 }
@@ -442,17 +446,17 @@ impl Display for PatternId {
     }
 }
 
-#[derive(Copy, Clone)]
+#[derive(Clone)]
 pub struct Volume {
-    value: f64,
+    value: Arc<AtomicF64>,
     value_db: f64,
 }
 
 impl Volume {
-    fn new(db: f64) -> Self {
+    fn new(db: f64, output: Arc<AtomicF64>) -> Self {
         let mut v = Self {
             value_db: 0.0,
-            value: 0.0,
+            value: output,
         };
         v.set(db);
         v
@@ -463,7 +467,7 @@ impl Volume {
     }
 
     pub fn val(&self) -> f64 {
-        self.value
+        self.value.load(Ordering::Relaxed)
     }
 
     fn inc(&mut self) {
@@ -478,7 +482,8 @@ impl Volume {
         let db = f64::min(db, 3.0);
         let db = f64::max(db, -60.0);
         self.value_db = db;
-        self.value = f64::powf(10.0, db / 20.0);
+        let new = f64::powf(10.0, db / 20.0);
+        self.value.store(new, Ordering::Relaxed);
     }
 }
 

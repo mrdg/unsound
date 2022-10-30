@@ -300,8 +300,8 @@ mod tests {
         let track1 = TrackId::new();
         let track2 = TrackId::new();
 
-        tracks.insert(track1, Box::new(Track::new()));
-        tracks.insert(track2, Box::new(Track::new()));
+        tracks.insert(track1, Box::new(Track::default()));
+        tracks.insert(track2, Box::new(Track::default()));
         let sample = Stereo::new([0.5, 0.5]);
 
         let sound = Sound::new(vec![sample; 16], 0, 44100);

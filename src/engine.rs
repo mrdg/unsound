@@ -1,8 +1,10 @@
 use std::collections::HashMap;
 use std::ops::Range;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::vec;
 
+use atomic_float::AtomicF64;
 use ringbuf::Consumer;
 use triple_buffer::Input;
 
@@ -30,7 +32,7 @@ pub struct Engine {
     state_buf: Input<EngineState>,
     instruments: HashMap<DeviceId, Device>,
     tracks: HashMap<TrackId, Box<Track>>,
-    sum_buf: Buffer,
+    master: Track,
     preview_track_id: TrackId,
     consumer: Consumer<EngineCommand>,
     samples_to_tick: usize,
@@ -41,18 +43,19 @@ impl Engine {
         state: EngineState,
         state_buf: Input<EngineState>,
         consumer: Consumer<EngineCommand>,
+        master: Track,
         preview_track_id: TrackId,
     ) -> Engine {
         let mut tracks = HashMap::with_capacity(TOTAL_TRACKS);
         let instruments = HashMap::with_capacity(TOTAL_TRACKS);
-        tracks.insert(preview_track_id, Box::new(Track::new()));
+        tracks.insert(preview_track_id, Box::new(Track::default()));
 
         Self {
             instruments,
             tracks,
             state,
             state_buf,
-            sum_buf: vec![Stereo::ZERO; INTERNAL_BUFFER_SIZE],
+            master,
             preview_track_id,
             consumer,
             samples_to_tick: 0,
@@ -131,37 +134,17 @@ impl Engine {
             instr.process(&mut ctx);
         }
 
-        for track_info in &state.tracks {
-            let track = self.tracks.get_mut(&track_info.id).unwrap();
-            for (i, out) in self.sum_buf.iter_mut().enumerate() {
-                let frame = track.buf[i] * track_info.volume.val() as f32;
-                track.rms.add_frame(frame);
-                *out += frame;
-                track.buf[i] = Stereo::ZERO;
+        for (id, track) in self.tracks.iter_mut() {
+            if *id == self.preview_track_id {
+                // Preview track processes directly into the output buffer
+                continue;
             }
+            track.process(&mut self.master.buf[..buffer.len()]);
         }
+        self.master.process(buffer);
 
-        let bus_state = state.master_bus();
-        let bus = self.tracks.get_mut(&bus_state.id).unwrap();
-        for (i, out) in buffer.iter_mut().enumerate() {
-            let frame = self.sum_buf[i] * bus_state.volume.val() as f32;
-            bus.rms.add_frame(frame);
-            *out += frame;
-            self.sum_buf[i] = Stereo::ZERO;
-        }
-
-        // Copy frames from preview track directly into the output buffer
         let preview = self.tracks.get_mut(&self.preview_track_id).unwrap();
-        for (i, out) in buffer.iter_mut().enumerate() {
-            let frame = preview.buf[i];
-            *out += frame;
-            preview.buf[i] = Stereo::ZERO;
-        }
-
-        for track_state in state.tracks.iter() {
-            let track = self.tracks.get_mut(&track_state.id).unwrap();
-            track_state.update_rms(amp_to_db(track.rms.value()));
-        }
+        preview.process(buffer);
 
         self.state_buf.input_buffer().clone_from(&self.state);
         self.state_buf.publish();
@@ -207,7 +190,9 @@ impl Engine {
 
 pub struct Track {
     pub buf: Buffer,
+    pub rms_out: Arc<[AtomicF64; 2]>,
     rms: Rms,
+    pub volume: Arc<AtomicF64>,
     /// ID of the instrument that last played a note on this track. This allows sending
     /// a note off to that device when a new event is played on this track.
     active_device_id: Option<DeviceId>,
@@ -217,9 +202,34 @@ impl Track {
     pub fn new() -> Self {
         Self {
             rms: Rms::new(RMS_WINDOW_SIZE),
+            rms_out: Arc::new([AtomicF64::new(0.0), AtomicF64::new(0.0)]),
+            volume: Arc::new(AtomicF64::new(1.0)),
             buf: vec![Stereo::ZERO; INTERNAL_BUFFER_SIZE],
             active_device_id: None,
         }
+    }
+
+    fn volume(&self) -> f32 {
+        self.volume.load(Ordering::Relaxed) as f32
+    }
+
+    fn process(&mut self, buf: &mut [Stereo]) {
+        let amp = self.volume();
+        for (i, out) in buf.iter_mut().enumerate() {
+            let frame = self.buf[i] * amp;
+            self.rms.add_frame(frame);
+            *out += frame;
+            self.buf[i] = Stereo::ZERO;
+        }
+        let v = amp_to_db(self.rms.value());
+        self.rms_out[0].store(v.channel(0) as f64, Ordering::Relaxed);
+        self.rms_out[1].store(v.channel(1) as f64, Ordering::Relaxed);
+    }
+}
+
+impl Default for Track {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

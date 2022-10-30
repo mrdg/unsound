@@ -15,7 +15,7 @@ mod sampler;
 mod view;
 
 use anyhow::{anyhow, Result};
-use app::{EngineState, Msg, TrackType};
+use app::{EngineState, Msg};
 use assert_no_alloc::*;
 use audio::Stereo;
 use camino::Utf8PathBuf;
@@ -68,7 +68,7 @@ fn run() -> Result<()> {
         "sounds/bass.wav",
     ];
     for i in 0..num_tracks {
-        app.send(Msg::CreateTrack(i, TrackType::Instrument))?;
+        app.send(Msg::CreateTrack(i))?;
         if i < sounds.len() {
             app.send(Msg::LoadSound(i, Utf8PathBuf::from(sounds[i])))?;
         }
