@@ -129,7 +129,7 @@ pub struct NoteEvent {
     pub track: usize,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Note {
     On(u8, u8),
     Off,
@@ -182,9 +182,11 @@ impl Step {
     }
 
     fn chord(&self) -> Option<i16> {
-        for effect in self.effects() {
-            if let Effect::Chord(Some(v)) = effect {
-                return Some(*v);
+        if self.pitch.is_some() {
+            for effect in self.effects() {
+                if let Effect::Chord(Some(v)) = effect {
+                    return Some(*v);
+                }
             }
         }
         None
@@ -320,5 +322,31 @@ mod tests {
 
         let notes: Vec<NoteEvent> = pattern.events(3).collect();
         assert_eq!(1, notes.len());
+    }
+
+    #[test]
+    fn chord() {
+        let mut pattern = Pattern::new(1);
+        let mut step = Step::default();
+        step.pitch = Some(60);
+        step.effect1 = Some(Effect::Chord(Some(3)));
+        pattern.set_step(position(0, 0), step);
+
+        let notes: Vec<NoteEvent> = pattern.events(0).collect();
+        assert_eq!(
+            vec![Note::On(60, 100), Note::On(63, 100)],
+            notes.iter().map(|n| n.note).collect::<Vec<Note>>()
+        );
+    }
+
+    #[test]
+    fn chord_without_pitch() {
+        let mut pattern = Pattern::new(1);
+        let mut step = Step::default();
+        step.effect1 = Some(Effect::Chord(Some(3)));
+        pattern.set_step(position(0, 0), step);
+
+        let notes: Vec<NoteEvent> = pattern.events(0).collect();
+        assert_eq!(0, notes.len());
     }
 }

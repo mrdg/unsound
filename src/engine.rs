@@ -36,6 +36,7 @@ pub struct Engine {
     preview_track_id: TrackId,
     consumer: Consumer<EngineCommand>,
     samples_to_tick: usize,
+    total_ticks: u64,
 }
 
 impl Engine {
@@ -59,6 +60,7 @@ impl Engine {
             preview_track_id,
             consumer,
             samples_to_tick: 0,
+            total_ticks: 0,
         }
     }
 
@@ -71,6 +73,7 @@ impl Engine {
                 let samples_to_tick = (SAMPLE_RATE * 60.)
                     / (TICKS_PER_LINE as u16 * state.lines_per_beat * state.bpm) as f64;
                 self.samples_to_tick = samples_to_tick.round() as usize;
+                self.total_ticks += 1;
             }
             offset = usize::min(num_frames, self.samples_to_tick);
             self.samples_to_tick -= offset;
@@ -95,14 +98,16 @@ impl Engine {
                 let track_id = state.tracks[event.track].id;
                 let track = self.tracks.get_mut(&track_id).unwrap();
 
-                if let Some(instr_id) = track.active_device_id {
-                    let instr = self.instruments.get_mut(&instr_id).unwrap();
-                    instr.send_event(Event::new(offset, track_id, Note::Off));
+                if let Some((tick, instr_id)) = track.last_event {
+                    if tick != self.total_ticks {
+                        let instr = self.instruments.get_mut(&instr_id).unwrap();
+                        instr.send_event(Event::new(offset, track_id, Note::Off));
+                    }
                 }
 
-                track.active_device_id = Some(instr.id);
+                track.last_event = Some((self.total_ticks, instr.id));
                 if let Note::Off = event.note {
-                    track.active_device_id = None;
+                    track.last_event = None;
                 }
 
                 let instr = self.instruments.get_mut(&instr.id).unwrap();
@@ -157,7 +162,7 @@ impl Engine {
                     self.instruments.retain(|_, d| !d.deleted || !d.is_idle());
                     let instr = self.instruments.get_mut(&device_id).unwrap();
                     for (track_id, track) in &self.tracks {
-                        if let Some(id) = track.active_device_id {
+                        if let Some((_, id)) = track.last_event {
                             if id == device_id {
                                 instr.send_event(Event::new(0, *track_id, Note::Off))
                             }
@@ -167,7 +172,7 @@ impl Engine {
                 }
                 EngineCommand::PlayNote(device_id, track_id, pitch) => {
                     let track = self.tracks.get_mut(&track_id).unwrap();
-                    if let Some(instr_id) = track.active_device_id {
+                    if let Some((_, instr_id)) = track.last_event {
                         if track_id == self.preview_track_id {
                             let instr = self.instruments.get_mut(&instr_id).unwrap();
                             instr.send_event(Event::new(0, track_id, Note::Off));
@@ -199,9 +204,9 @@ pub struct Track {
     rms: Rms,
     volume: SmoothedValue,
     mute: SmoothedValue,
-    /// ID of the instrument that last played a note on this track. This allows sending
+    /// Time and instrument id for the last note on event played on this track. This allows sending
     /// a note off to that device when a new event is played on this track.
-    active_device_id: Option<DeviceId>,
+    last_event: Option<(u64, DeviceId)>,
 }
 
 impl Track {
@@ -212,7 +217,7 @@ impl Track {
             volume: SmoothedValue::new(volume),
             buf: vec![Stereo::ZERO; INTERNAL_BUFFER_SIZE],
             mute: SmoothedValue::new(1.0),
-            active_device_id: None,
+            last_event: None,
         }
     }
 
