@@ -184,8 +184,8 @@ impl App {
             VolumeDec(track) => self.track_volume(track).dec(),
             SetVolume(track, value) => self.track_volume(track).set(value),
             CreateTrack(idx) => {
-                let track = engine::Track::new();
-                let volume = Volume::new(-6.0, track.volume.clone());
+                let volume = Volume::new(-6.0);
+                let track = engine::Track::new(volume.val());
                 let rms = track.rms_out.clone();
                 let track_info = Track::new(volume, rms);
                 let cmd = EngineCommand::CreateTrack(track_info.id, Box::new(track));
@@ -289,10 +289,6 @@ impl AppState {
         next
     }
 
-    pub fn is_track_muted(&self, track: usize) -> bool {
-        self.tracks[track].muted
-    }
-
     pub fn master_bus(&self) -> &Track {
         // the master track always exists so it's ok to unwrap here
         self.tracks.last().unwrap()
@@ -370,8 +366,8 @@ pub fn new() -> Result<(App, Output<AppState>, Engine, Output<EngineState>)> {
     let (engine_state_input, engine_state_output) = TripleBuffer::new(&engine_state).split();
 
     // Create master track
-    let master = engine::Track::default();
-    let volume = Volume::new(-6.0, master.volume.clone());
+    let volume = Volume::new(-6.0);
+    let master = engine::Track::new(volume.val());
     let rms = master.rms_out.clone();
     let mut track = Track::new(volume, rms);
     track.name = Some(String::from("Master"));
@@ -448,15 +444,15 @@ impl Display for PatternId {
 
 #[derive(Clone)]
 pub struct Volume {
-    value: Arc<AtomicF64>,
+    value: f64,
     value_db: f64,
 }
 
 impl Volume {
-    fn new(db: f64, output: Arc<AtomicF64>) -> Self {
+    fn new(db: f64) -> Self {
         let mut v = Self {
             value_db: 0.0,
-            value: output,
+            value: 0.0,
         };
         v.set(db);
         v
@@ -467,7 +463,7 @@ impl Volume {
     }
 
     pub fn val(&self) -> f64 {
-        self.value.load(Ordering::Relaxed)
+        self.value
     }
 
     fn inc(&mut self) {
@@ -483,7 +479,7 @@ impl Volume {
         let db = f64::max(db, -60.0);
         self.value_db = db;
         let new = f64::powf(10.0, db / 20.0);
-        self.value.store(new, Ordering::Relaxed);
+        self.value = new;
     }
 }
 

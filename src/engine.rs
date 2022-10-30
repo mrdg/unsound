@@ -91,12 +91,6 @@ impl Engine {
         });
 
         for event in pattern.events(self.state.current_tick) {
-            if state.is_track_muted(event.track as usize) {
-                // TODO: trigger fade out for muted channels so sounds with long
-                // release don't keep playing
-                continue;
-            }
-
             if let Some(instr) = &state.instruments[event.instrument] {
                 let track_id = state.tracks[event.track].id;
                 let track = self.tracks.get_mut(&track_id).unwrap();
@@ -106,11 +100,10 @@ impl Engine {
                     instr.send_event(Event::new(offset, track_id, Note::Off));
                 }
 
-                track.active_device_id = if let Note::Off = event.note {
-                    None
-                } else {
-                    Some(instr.id)
-                };
+                track.active_device_id = Some(instr.id);
+                if let Note::Off = event.note {
+                    track.active_device_id = None;
+                }
 
                 let instr = self.instruments.get_mut(&instr.id).unwrap();
                 instr.send_event(Event::new(offset, track_id, event.note));
@@ -126,6 +119,7 @@ impl Engine {
     }
 
     pub fn process(&mut self, state: &AppState, buffer: &mut [Stereo]) {
+        self.update_state(state);
         self.run_commands(state);
         self.tick(state, buffer.len());
 
@@ -186,37 +180,45 @@ impl Engine {
             }
         }
     }
+
+    fn update_state(&mut self, state: &AppState) {
+        self.master.mute.target = if state.is_playing { 1.0 } else { 0.0 };
+        for track_settings in &state.tracks {
+            if let Some(track) = self.tracks.get_mut(&track_settings.id) {
+                let track_muted = track_settings.muted || !state.is_playing;
+                track.mute.target = if track_muted { 0.0 } else { 1.0 };
+                track.volume.target = track_settings.volume.val();
+            }
+        }
+    }
 }
 
 pub struct Track {
     pub buf: Buffer,
     pub rms_out: Arc<[AtomicF64; 2]>,
     rms: Rms,
-    pub volume: Arc<AtomicF64>,
+    volume: SmoothedValue,
+    mute: SmoothedValue,
     /// ID of the instrument that last played a note on this track. This allows sending
     /// a note off to that device when a new event is played on this track.
     active_device_id: Option<DeviceId>,
 }
 
 impl Track {
-    pub fn new() -> Self {
+    pub fn new(volume: f64) -> Self {
         Self {
             rms: Rms::new(RMS_WINDOW_SIZE),
             rms_out: Arc::new([AtomicF64::new(0.0), AtomicF64::new(0.0)]),
-            volume: Arc::new(AtomicF64::new(1.0)),
+            volume: SmoothedValue::new(volume),
             buf: vec![Stereo::ZERO; INTERNAL_BUFFER_SIZE],
+            mute: SmoothedValue::new(1.0),
             active_device_id: None,
         }
     }
 
-    fn volume(&self) -> f32 {
-        self.volume.load(Ordering::Relaxed) as f32
-    }
-
     fn process(&mut self, buf: &mut [Stereo]) {
-        let amp = self.volume();
         for (i, out) in buf.iter_mut().enumerate() {
-            let frame = self.buf[i] * amp;
+            let frame = self.buf[i] * self.volume.value() as f32 * self.mute.value() as f32;
             self.rms.add_frame(frame);
             *out += frame;
             self.buf[i] = Stereo::ZERO;
@@ -229,7 +231,7 @@ impl Track {
 
 impl Default for Track {
     fn default() -> Self {
-        Self::new()
+        Self::new(1.0)
     }
 }
 
@@ -321,4 +323,23 @@ impl<'a> ProcessContext<'a> {
 
 fn amp_to_db(frame: Stereo) -> Stereo {
     frame.map(|sample| 20.0 * f32::log10(sample.abs()))
+}
+
+pub struct SmoothedValue {
+    current: f64,
+    target: f64,
+}
+
+impl SmoothedValue {
+    fn new(value: f64) -> Self {
+        Self {
+            current: value,
+            target: value,
+        }
+    }
+
+    fn value(&mut self) -> f64 {
+        self.current = 0.01 * self.target + 0.99 * self.current;
+        self.current
+    }
 }
