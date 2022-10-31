@@ -39,6 +39,10 @@ impl<const N: usize> Frame<N> {
         }
         output
     }
+
+    pub fn to_db(self) -> Frame<N> {
+        self.map(|s| 20.0 * f32::log10(s.abs()))
+    }
 }
 
 impl<const N: usize> Add for Frame<N> {

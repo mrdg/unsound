@@ -228,7 +228,7 @@ impl Track {
             *out += frame;
             self.buf[i] = Stereo::ZERO;
         }
-        let v = amp_to_db(self.rms.value());
+        let v = self.rms.value().to_db();
         self.rms_out[0].store(v.channel(0) as f64, Ordering::Relaxed);
         self.rms_out[1].store(v.channel(1) as f64, Ordering::Relaxed);
     }
@@ -324,10 +324,6 @@ impl<'a> ProcessContext<'a> {
         let track = self.tracks.get_mut(&track_id).unwrap();
         &mut track.buf[range.clone()]
     }
-}
-
-fn amp_to_db(frame: Stereo) -> Stereo {
-    frame.map(|sample| 20.0 * f32::log10(sample.abs()))
 }
 
 pub struct SmoothedValue {
