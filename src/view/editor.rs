@@ -146,29 +146,32 @@ impl<'a> Editor<'a> {
             let line = line + step_range.start;
             let column = track.index * INPUTS_PER_STEP;
 
-            let pitch = match step.pitch {
+            let pitch = match step.pitch() {
                 Some(pitch) => &NOTE_NAMES[pitch as usize],
                 None => "---",
             };
 
-            let snd = match step.instrument {
+            let snd = match step.instrument() {
                 Some(v) => format!("{:0width$}", v, width = 2),
                 None => String::from("--"),
             };
 
-            let effects: Vec<(String, String)> = [step.effect1, step.effect2]
-                .iter()
-                .map(|effect| match effect {
-                    Some(effect) => {
-                        let desc = effect.desc();
-                        (
-                            desc.effect_type,
-                            desc.value.unwrap_or_else(|| "---".to_string()),
-                        )
-                    }
-                    None => ("-".to_string(), "---".to_string()),
-                })
-                .collect();
+            let fx_cmd1 = step
+                .effect_cmd(0)
+                .map(|c| (c as u8 as char).to_string())
+                .unwrap_or_else(|| "-".into());
+            let fx_val1 = step
+                .effect_val(0)
+                .map(|c| format!("{:3}", c))
+                .unwrap_or_else(|| "---".into());
+            let fx_cmd2 = step
+                .effect_cmd(1)
+                .map(|c| (c as u8 as char).to_string())
+                .unwrap_or_else(|| "-".into());
+            let fx_val2 = step
+                .effect_val(1)
+                .map(|c| format!("{:3}", c))
+                .unwrap_or_else(|| "---".into());
 
             let line_style = if line % self.ctx.lines_per_beat() as usize == 0 {
                 Style::default().bg(Color::Indexed(236))
@@ -183,7 +186,7 @@ impl<'a> Editor<'a> {
                     Style::default().bg(Color::Green).fg(Color::Black)
                 } else if self.is_current_line(line)
                     && offset == 0
-                    && step.pitch.is_some()
+                    && step.pitch().is_some()
                     && self.ctx.is_playing()
                 {
                     // Pitch input is highlighted when it's the currently active note
@@ -199,11 +202,11 @@ impl<'a> Editor<'a> {
                 Span::styled(" ", line_style),
                 Span::styled(snd, input_style(1)),
                 Span::styled(" ", line_style),
-                Span::styled(&effects[0].0, input_style(2)),
-                Span::styled(&effects[0].1, input_style(3)),
+                Span::styled(fx_cmd1, input_style(2)),
+                Span::styled(fx_val1, input_style(3)),
                 Span::styled(" ", line_style),
-                Span::styled(&effects[1].0, input_style(4)),
-                Span::styled(&effects[1].1, input_style(5)),
+                Span::styled(fx_cmd2, input_style(4)),
+                Span::styled(fx_val2, input_style(5)),
                 Span::styled(" ", line_style),
             ]);
 

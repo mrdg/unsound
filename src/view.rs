@@ -1,6 +1,5 @@
 pub mod context;
 pub mod editor;
-pub mod pattern;
 
 use std::time::Duration;
 
@@ -462,8 +461,7 @@ impl View {
                 Key::Alt('-') => return Ok(VolumeDec(Some(self.cursor.pos.track()))),
                 Key::Char(' ') => return Ok(TogglePlay),
                 Key::Backspace => {
-                    let step = ctx.update_step(self.cursor.pos, |mut s| s.clear());
-                    let msg = SetPatternStep(self.cursor.pos, step);
+                    let msg = ctx.update_pattern(|p| p.clear(self.cursor.pos));
                     if self.cursor.pos.is_pitch_input() {
                         self.cursor.down();
                     }
@@ -478,32 +476,20 @@ impl View {
                 Key::Ctrl('d') => return Ok(NextPattern),
                 Key::Ctrl('u') => return Ok(PrevPattern),
                 Key::Char('[') => {
-                    return Ok(SetPatternStep(
-                        self.cursor.pos,
-                        ctx.update_step(self.cursor.pos, |mut s| s.next(StepSize::Default)),
-                    ))
+                    return Ok(ctx.update_pattern(|p| p.incr(self.cursor.pos, StepSize::Default)))
                 }
                 Key::Char(']') => {
-                    return Ok(SetPatternStep(
-                        self.cursor.pos,
-                        ctx.update_step(self.cursor.pos, |mut s| s.prev(StepSize::Default)),
-                    ))
+                    return Ok(ctx.update_pattern(|p| p.decr(self.cursor.pos, StepSize::Default)))
                 }
                 Key::Char('{') => {
-                    return Ok(SetPatternStep(
-                        self.cursor.pos,
-                        ctx.update_step(self.cursor.pos, |mut s| s.next(StepSize::Large)),
-                    ))
+                    return Ok(ctx.update_pattern(|p| p.incr(self.cursor.pos, StepSize::Large)))
                 }
                 Key::Char('}') => {
-                    return Ok(SetPatternStep(
-                        self.cursor.pos,
-                        ctx.update_step(self.cursor.pos, |mut s| s.prev(StepSize::Large)),
-                    ))
+                    return Ok(ctx.update_pattern(|p| p.decr(self.cursor.pos, StepSize::Large)))
                 }
                 Key::Char(key) => {
-                    let step = ctx.update_step(self.cursor.pos, |mut s| s.keypress(ctx, key));
-                    let msg = SetPatternStep(self.cursor.pos, step);
+                    let msg =
+                        ctx.update_pattern(|p| p.set_key(self.cursor.pos, ctx.octave() as u8, key));
                     if self.cursor.pos.is_pitch_input() {
                         self.cursor.down()
                     }

@@ -1,12 +1,10 @@
 use crate::app::{
-    AppState, Device, DeviceId, EngineState, Instrument, PatternId, Track, TrackType,
+    AppState, Device, DeviceId, EngineState, Instrument, Msg, PatternId, Track, TrackType,
 };
 use crate::engine::TICKS_PER_LINE;
 use crate::files::FileBrowser;
 use crate::params::Params;
-use crate::pattern::{Pattern, Position, Step};
-use crate::view;
-use crate::view::pattern::StepInput;
+use crate::pattern::{Pattern, Step};
 
 use std::collections::HashMap;
 use std::ops::Range;
@@ -68,14 +66,13 @@ impl<'a> ViewContext<'a> {
         self.app_state.octave
     }
 
-    pub fn update_step<F>(&self, pos: Position, f: F) -> Step
+    pub fn update_pattern<F>(&self, f: F) -> Msg
     where
-        F: Fn(Box<dyn view::pattern::Input + '_>),
+        F: Fn(&mut Pattern),
     {
-        let mut step = self.selected_pattern().step(pos);
-        let input = step.input(pos);
-        f(input);
-        step
+        let mut pattern = self.selected_pattern().clone();
+        f(&mut pattern);
+        Msg::UpdatePattern(self.selected_pattern_id(), pattern)
     }
 
     pub fn devices(&self, track_idx: usize) -> &Vec<Device> {
@@ -126,6 +123,10 @@ impl<'a> ViewContext<'a> {
     pub fn selected_pattern(&self) -> &Pattern {
         let id = self.app().song[self.app().selected_pattern];
         self.app().patterns.get(&id).unwrap()
+    }
+
+    pub fn selected_pattern_id(&self) -> PatternId {
+        self.app().song[self.app().selected_pattern]
     }
 
     pub fn selected_pattern_index(&self) -> usize {

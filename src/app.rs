@@ -9,7 +9,7 @@ use ulid::Ulid;
 use crate::engine::{self, Engine, Plugin, INSTRUMENT_TRACKS};
 use crate::files::FileBrowser;
 use crate::params::Params;
-use crate::pattern::{Position, Step, StepSize, MAX_PATTERNS};
+use crate::pattern::{StepSize, MAX_PATTERNS};
 use crate::sampler::{self, Sampler, ROOT_PITCH};
 use crate::{engine::EngineCommand, pattern::Pattern};
 use std::collections::HashMap;
@@ -47,7 +47,6 @@ impl App {
             TogglePlay => {
                 self.state.is_playing = !self.state.is_playing;
             }
-            SetPatternStep(pos, step) => self.update_pattern(|p| p.set_step(pos, step)),
             SetBpm(bpm) => self.state.bpm = bpm,
             SetOct(oct) => self.state.octave = oct,
             LoadSound(idx, path) => {
@@ -143,6 +142,9 @@ impl App {
                         *loop_range = (usize::min(loop_range.0, end), usize::min(loop_range.1, end))
                     }
                 }
+            }
+            UpdatePattern(id, pattern) => {
+                self.state.patterns.insert(id, Arc::new(pattern));
             }
             CreatePattern(idx) => {
                 if self.state.patterns.len() < MAX_PATTERNS {
@@ -402,7 +404,6 @@ pub enum Msg {
     Noop,
     Exit,
     TogglePlay,
-    SetPatternStep(Position, Step),
     LoadSound(usize, Utf8PathBuf),
     PreviewSound(Utf8PathBuf),
     LoopAdd(usize),
@@ -415,6 +416,7 @@ pub enum Msg {
     RepeatPattern(usize),
     ClonePattern(usize),
     SetPatternLen(usize),
+    UpdatePattern(PatternId, Pattern),
     ChangeDir(Utf8PathBuf),
     SetBpm(u16),
     SetOct(u16),
