@@ -720,28 +720,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "605dc50025dcaaeb8ce2b6b3583432b446c80c90ecd8463569dba8a040e87886"
 
 [[package]]
-name = "ruis"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "assert_no_alloc",
- "atomic_float",
- "camino",
- "cpal",
- "hound",
- "lazy_static",
- "lru",
- "num-traits",
- "param_derive",
- "rand",
- "ringbuf",
- "termion",
- "triple_buffer",
- "tui",
- "ulid",
-]
-
-[[package]]
 name = "rustc-hash"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -892,6 +870,28 @@ name = "unicode-xid"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8ccb82d61f80a663efe1f787a51b16b5a51e3314d6ac365b08639f52387b33f3"
+
+[[package]]
+name = "unsound"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "assert_no_alloc",
+ "atomic_float",
+ "camino",
+ "cpal",
+ "hound",
+ "lazy_static",
+ "lru",
+ "num-traits",
+ "param_derive",
+ "rand",
+ "ringbuf",
+ "termion",
+ "triple_buffer",
+ "tui",
+ "ulid",
+]
 
 [[package]]
 name = "version_check"

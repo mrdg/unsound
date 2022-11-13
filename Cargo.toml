@@ -1,5 +1,5 @@
 [package]
-name = "ruis"
+name = "unsound"
 version = "0.1.0"
 authors = ["Menno de Gier <mrdegier@gmail.com>"]
 edition = "2018"

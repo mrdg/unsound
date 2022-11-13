@@ -1,4 +1,2 @@
-Ruis
-====
-
-Terminal-based tracker written in Rust.
+Unsound Tracker
+===============
