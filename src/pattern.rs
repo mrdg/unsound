@@ -1,4 +1,5 @@
 use crate::engine::TICKS_PER_LINE;
+use std::ops::{Add, Sub};
 
 pub const INPUTS_PER_STEP: usize = 6;
 pub const MAX_PITCH: u8 = 109;
@@ -22,13 +23,31 @@ const FX_VAL1: usize = 3;
 const FX_CMD2: usize = 4;
 const FX_VAL2: usize = 5;
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Position {
     pub line: usize,
     pub column: usize,
 }
 
+impl Add for Position {
+    type Output = Position;
+    fn add(self, rhs: Self) -> Self::Output {
+        Self::new(self.line + rhs.line, self.column + rhs.column)
+    }
+}
+
+impl Sub for Position {
+    type Output = Position;
+    fn sub(self, rhs: Self) -> Self::Output {
+        Self::new(self.line - rhs.line, self.column - rhs.column)
+    }
+}
+
 impl Position {
+    fn new(line: usize, column: usize) -> Self {
+        Self { line, column }
+    }
+
     pub fn track(&self) -> usize {
         self.column / INPUTS_PER_STEP
     }
@@ -50,6 +69,18 @@ impl Position {
     }
 }
 
+#[derive(Default)]
+pub struct Rect {
+    pub lines: usize,
+    pub columns: usize,
+}
+
+impl Rect {
+    fn new(lines: usize, columns: usize) -> Self {
+        Self { lines, columns }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Pattern {
     pub tracks: Vec<Track>,
@@ -66,8 +97,8 @@ impl Pattern {
         Self { tracks }
     }
 
-    pub fn size(&self) -> (usize, usize) {
-        (self.len(), self.tracks.len() * INPUTS_PER_STEP)
+    pub fn size(&self) -> Rect {
+        Rect::new(self.len(), self.tracks.len() * INPUTS_PER_STEP)
     }
 
     pub fn len(&self) -> usize {
@@ -116,6 +147,18 @@ impl Pattern {
         &mut self.tracks[pos.track()].steps[pos.line]
     }
 
+    fn step(&self, pos: Position) -> &Step {
+        &self.tracks[pos.track()].steps[pos.line]
+    }
+
+    fn cell(&self, pos: Position) -> Option<u8> {
+        *self.step(pos).cell(pos.input().idx)
+    }
+
+    fn cell_mut(&mut self, pos: Position) -> &mut Option<u8> {
+        self.step_mut(pos).cell_mut(pos.input().idx)
+    }
+
     // For each track in the pattern, return notes that should be played on the given tick. The
     // tick is relative to the start of the pattern.
     pub fn events(&self, tick: usize) -> impl Iterator<Item = NoteEvent> + '_ {
@@ -155,6 +198,30 @@ impl Pattern {
             };
             notes.into_iter().flatten()
         })
+    }
+
+    pub fn copy(&mut self, start: Position, src: &Pattern, selection: &Selection) {
+        let dst_size = self.size();
+        let src_size = selection.size();
+        if dst_size.lines - start.line < src_size.lines
+            || dst_size.columns - start.column < src_size.columns
+        {
+            // TODO: truncate selection or automatically increase dst pattern size?
+            return;
+        }
+
+        let src_start = selection.start();
+
+        // Check that src and dst are aligned.
+        // TODO: allow pasting from fx1 into fx2 and vice versa
+        // TODO: return error if selection can't be copied
+        if src_start.input().idx != start.input().idx {
+            return;
+        }
+
+        for pos in selection.iter() {
+            *self.cell_mut(start + pos) = src.cell(src_start + pos);
+        }
     }
 }
 
@@ -402,6 +469,80 @@ fn key_to_pitch(octave: u8, key: char) -> Option<u8> {
     Some(pitch)
 }
 
+#[derive(Clone)]
+pub struct Selection {
+    // The cursor position when the selection was started.
+    start: Position,
+    // The most recent cursor position for this selection. This position is included in the
+    // selection.
+    end: Position,
+}
+
+impl Selection {
+    pub fn new(start: Position, end: Position) -> Self {
+        Self { start, end }
+    }
+
+    pub fn move_to(&mut self, pos: Position) {
+        self.end = pos;
+    }
+
+    pub fn contains(&self, line: usize, column: usize) -> bool {
+        let start = self.start();
+        let end = self.end();
+        start.line <= line && line <= end.line && start.column <= column && column <= end.column
+    }
+
+    fn start(&self) -> Position {
+        let line = usize::min(self.start.line, self.end.line);
+        let col = usize::min(self.start.column, self.end.column);
+        Position::new(line, col)
+    }
+
+    fn end(&self) -> Position {
+        let line = usize::max(self.start.line, self.end.line);
+        let col = usize::max(self.start.column, self.end.column);
+        Position::new(line, col)
+    }
+
+    fn size(&self) -> Rect {
+        let start = self.start();
+        let end = self.end();
+        Rect::new(end.line - start.line + 1, end.column - start.column + 1)
+    }
+
+    fn iter(&self) -> impl Iterator<Item = Position> {
+        SelectionIter {
+            curr: Position::new(0, 0),
+            end: self.end() - self.start(),
+        }
+    }
+}
+
+// Iterates over the points in a selection. The points it yields are relative to the start of the
+// selection, to make it easier to calculate the destination point when copy/pasting.
+struct SelectionIter {
+    curr: Position,
+    end: Position,
+}
+
+impl Iterator for SelectionIter {
+    type Item = Position;
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.curr.column > self.end.column {
+            return None;
+        }
+        let curr = &mut self.curr;
+        let pos = *curr;
+        curr.line += 1;
+        if curr.line > self.end.line {
+            curr.line = 0;
+            curr.column += 1;
+        }
+        Some(pos)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -598,5 +739,40 @@ mod tests {
 
         let notes: Vec<NoteEvent> = pattern.events(0).collect();
         assert_eq!(1, notes.len());
+    }
+
+    #[test]
+    fn selection_iter() {
+        let a = Position::new(2, 2);
+        let b = Position::new(3, 3);
+        let s = Selection::new(a, b);
+        let expected = vec![
+            Position::new(0, 0),
+            Position::new(1, 0),
+            Position::new(0, 1),
+            Position::new(1, 1),
+        ];
+        assert_eq!(expected, s.iter().collect::<Vec<Position>>());
+    }
+
+    #[test]
+    fn selection_length_exceeds_pattern_length() {
+        let mut p1 = Pattern::new(1);
+        p1.set_len(16);
+        let p2 = p1.clone();
+
+        let s = Selection::new(Position::new(0, 0), Position::new(8, 0));
+        // No assertions but this panics without the bounds checking
+        p1.copy(Position::new(8, 0), &p2, &s);
+    }
+
+    #[test]
+    fn selection_width_exceeds_pattern_width() {
+        let mut p1 = Pattern::new(2);
+        p1.set_len(16);
+        let p2 = p1.clone();
+
+        let s = Selection::new(Position::new(0, 0), Position::new(0, 11));
+        p1.copy(Position::new(0, 6), &p2, &s);
     }
 }

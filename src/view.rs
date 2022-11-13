@@ -6,7 +6,10 @@ use std::time::Duration;
 use crate::app::Msg;
 pub use crate::input::{Input, InputQueue};
 use crate::params::ParamIterExt;
+use crate::pattern;
+use crate::pattern::Pattern;
 use crate::pattern::Position;
+use crate::pattern::Selection;
 use crate::pattern::StepSize;
 pub use crate::view::context::ViewContext;
 pub use crate::view::editor::{Editor, EditorState};
@@ -36,6 +39,8 @@ pub struct View {
     editor: EditorState,
     command: String,
     project_tree_state: ProjectTreeState,
+    selection: Option<Selection>,
+    clipboard: Option<(Pattern, Selection)>,
 }
 
 impl View {
@@ -53,6 +58,8 @@ impl View {
             focus: Focus::Editor,
             command: String::new(),
             project_tree_state: ProjectTreeState::Instruments,
+            selection: None,
+            clipboard: None,
         }
     }
 }
@@ -149,7 +156,7 @@ impl View {
         let area = block.inner(sections[1]);
         f.render_widget(block, sections[1]);
 
-        let editor = Editor::new(self.cursor.pos, self.focus, ctx);
+        let editor = Editor::new(self.cursor.pos, self.focus, &self.selection, ctx);
         f.render_stateful_widget(&editor, area, &mut self.editor);
     }
 
@@ -455,48 +462,93 @@ impl View {
         }
 
         match self.focus {
-            Focus::Editor => match key {
-                Key::Alt('m') => return Ok(ToggleMute(self.cursor.pos.track())),
-                Key::Alt('=') => return Ok(VolumeInc(Some(self.cursor.pos.track()))),
-                Key::Alt('-') => return Ok(VolumeDec(Some(self.cursor.pos.track()))),
-                Key::Char(' ') => return Ok(TogglePlay),
-                Key::Backspace => {
-                    let msg = ctx.update_pattern(|p| p.clear(self.cursor.pos));
-                    if self.cursor.pos.is_pitch_input() {
-                        self.cursor.down();
+            Focus::Editor => {
+                if let Some(s) = &mut self.selection {
+                    match key {
+                        Key::Ctrl('n') | Key::Down => self.cursor.down(),
+                        Key::Ctrl('p') | Key::Up => self.cursor.up(),
+                        Key::Ctrl('f') | Key::Right => self.cursor.right(),
+                        Key::Ctrl('b') | Key::Left => self.cursor.left(),
+                        Key::Ctrl('y') => {
+                            self.clipboard = Some((ctx.selected_pattern().clone(), s.clone()));
+                            self.selection = None;
+                            return Ok(Noop);
+                        }
+                        Key::Esc => {
+                            self.selection = None;
+                            return Ok(Noop);
+                        }
+                        _ => {}
                     }
-                    return Ok(msg);
+                    s.move_to(self.cursor.pos);
+                    return Ok(Noop);
                 }
-                Key::Ctrl('n') | Key::Down => self.cursor.down(),
-                Key::Ctrl('p') | Key::Up => self.cursor.up(),
-                Key::Ctrl('f') | Key::Right => self.cursor.right(),
-                Key::Ctrl('b') | Key::Left => self.cursor.left(),
-                Key::Ctrl('a') | Key::Home => self.cursor.start(),
-                Key::Ctrl('e') | Key::End => self.cursor.end(),
-                Key::Ctrl('d') => return Ok(NextPattern),
-                Key::Ctrl('u') => return Ok(PrevPattern),
-                Key::Char('[') => {
-                    return Ok(ctx.update_pattern(|p| p.incr(self.cursor.pos, StepSize::Default)))
-                }
-                Key::Char(']') => {
-                    return Ok(ctx.update_pattern(|p| p.decr(self.cursor.pos, StepSize::Default)))
-                }
-                Key::Char('{') => {
-                    return Ok(ctx.update_pattern(|p| p.incr(self.cursor.pos, StepSize::Large)))
-                }
-                Key::Char('}') => {
-                    return Ok(ctx.update_pattern(|p| p.decr(self.cursor.pos, StepSize::Large)))
-                }
-                Key::Char(key) => {
-                    let msg =
-                        ctx.update_pattern(|p| p.set_key(self.cursor.pos, ctx.octave() as u8, key));
-                    if self.cursor.pos.is_pitch_input() {
-                        self.cursor.down()
+
+                if let Some((pattern, selection)) = &self.clipboard {
+                    match key {
+                        Key::Ctrl('v') => {
+                            let msg =
+                                ctx.update_pattern(|p| p.copy(self.cursor.pos, pattern, selection));
+                            self.clipboard = None;
+                            return Ok(msg);
+                        }
+                        _ => {}
                     }
-                    return Ok(msg);
                 }
-                _ => {}
-            },
+
+                match key {
+                    Key::Alt('m') => return Ok(ToggleMute(self.cursor.pos.track())),
+                    Key::Alt('=') => return Ok(VolumeInc(Some(self.cursor.pos.track()))),
+                    Key::Alt('-') => return Ok(VolumeDec(Some(self.cursor.pos.track()))),
+                    Key::Ctrl('v') => {
+                        let pos = self.cursor.pos;
+                        self.selection = Some(Selection::new(pos, pos));
+                        return Ok(Noop);
+                    }
+                    Key::Char(' ') => return Ok(TogglePlay),
+                    Key::Backspace => {
+                        let msg = ctx.update_pattern(|p| p.clear(self.cursor.pos));
+                        if self.cursor.pos.is_pitch_input() {
+                            self.cursor.down();
+                        }
+                        return Ok(msg);
+                    }
+                    Key::Ctrl('n') | Key::Down => self.cursor.down(),
+                    Key::Ctrl('p') | Key::Up => self.cursor.up(),
+                    Key::Ctrl('f') | Key::Right => self.cursor.right(),
+                    Key::Ctrl('b') | Key::Left => self.cursor.left(),
+                    Key::Ctrl('a') | Key::Home => self.cursor.start(),
+                    Key::Ctrl('e') | Key::End => self.cursor.end(),
+                    Key::Ctrl('d') => return Ok(NextPattern),
+                    Key::Ctrl('u') => return Ok(PrevPattern),
+                    Key::Char('[') => {
+                        return Ok(
+                            ctx.update_pattern(|p| p.incr(self.cursor.pos, StepSize::Default))
+                        )
+                    }
+                    Key::Char(']') => {
+                        return Ok(
+                            ctx.update_pattern(|p| p.decr(self.cursor.pos, StepSize::Default))
+                        )
+                    }
+                    Key::Char('{') => {
+                        return Ok(ctx.update_pattern(|p| p.incr(self.cursor.pos, StepSize::Large)))
+                    }
+                    Key::Char('}') => {
+                        return Ok(ctx.update_pattern(|p| p.decr(self.cursor.pos, StepSize::Large)))
+                    }
+                    Key::Char(key) => {
+                        let msg = ctx.update_pattern(|p| {
+                            p.set_key(self.cursor.pos, ctx.octave() as u8, key)
+                        });
+                        if self.cursor.pos.is_pitch_input() {
+                            self.cursor.down()
+                        }
+                        return Ok(msg);
+                    }
+                    _ => {}
+                }
+            }
             Focus::CommandLine => {}
             Focus::Patterns => match key {
                 Key::Backspace => return Ok(DeletePattern(self.patterns.pos)),
@@ -714,14 +766,14 @@ impl Default for List {
 #[derive(Default)]
 struct Cursor {
     pos: Position,
-    pattern_size: (usize, usize),
+    pattern_size: pattern::Rect,
 }
 
 impl Cursor {
-    fn set_pattern_size(&mut self, size: (usize, usize)) {
+    fn set_pattern_size(&mut self, size: pattern::Rect) {
+        self.pos.line = usize::min(size.lines - 1, self.pos.line);
+        self.pos.column = usize::min(size.columns - 1, self.pos.column);
         self.pattern_size = size;
-        self.pos.line = usize::min(size.0 - 1, self.pos.line);
-        self.pos.column = usize::min(size.1 - 1, self.pos.column);
     }
 
     fn up(&mut self) {
@@ -729,7 +781,7 @@ impl Cursor {
     }
 
     fn down(&mut self) {
-        self.pos.line = usize::min(self.pattern_size.0 - 1, self.pos.line + 1);
+        self.pos.line = usize::min(self.pattern_size.lines - 1, self.pos.line + 1);
     }
 
     fn left(&mut self) {
@@ -737,7 +789,7 @@ impl Cursor {
     }
 
     fn right(&mut self) {
-        self.pos.column = usize::min(self.pattern_size.1 - 1, self.pos.column + 1);
+        self.pos.column = usize::min(self.pattern_size.columns - 1, self.pos.column + 1);
     }
 
     fn start(&mut self) {
@@ -745,6 +797,6 @@ impl Cursor {
     }
 
     fn end(&mut self) {
-        self.pos.column = self.pattern_size.1 - 1;
+        self.pos.column = self.pattern_size.lines - 1;
     }
 }

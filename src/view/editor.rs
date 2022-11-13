@@ -1,6 +1,6 @@
 use std::ops::Range;
 
-use crate::pattern::{Position, INPUTS_PER_STEP, MAX_PITCH};
+use crate::pattern::{Position, Selection, INPUTS_PER_STEP, MAX_PITCH};
 use crate::view::context::{TrackView, ViewContext};
 use crate::view::Focus;
 use tui::layout::{Alignment, Constraint, Direction, Layout};
@@ -23,11 +23,22 @@ pub struct Editor<'a> {
     ctx: ViewContext<'a>,
     cursor: Position,
     focus: Focus,
+    selection: &'a Option<Selection>,
 }
 
 impl<'a> Editor<'a> {
-    pub fn new(cursor: Position, focus: Focus, ctx: ViewContext<'a>) -> Self {
-        Self { ctx, cursor, focus }
+    pub fn new(
+        cursor: Position,
+        focus: Focus,
+        selection: &'a Option<Selection>,
+        ctx: ViewContext<'a>,
+    ) -> Self {
+        Self {
+            ctx,
+            cursor,
+            focus,
+            selection,
+        }
     }
 
     fn render_mixer_controls(&self, track: &TrackView, area: Rect, buf: &mut Buffer) {
@@ -179,11 +190,19 @@ impl<'a> Editor<'a> {
                 Style::default()
             };
             let input_style = |offset: usize| {
+                let selected = self
+                    .selection
+                    .as_ref()
+                    .map(|s| s.contains(line, column + offset))
+                    .unwrap_or(false);
+
                 if matches!(self.focus, Focus::Editor)
                     && self.cursor.line == line
                     && self.cursor.column == column + offset
                 {
                     Style::default().bg(Color::Green).fg(Color::Black)
+                } else if selected {
+                    Style::default().bg(Color::Rgb(65, 79, 139))
                 } else if self.is_current_line(line)
                     && offset == 0
                     && step.pitch().is_some()
