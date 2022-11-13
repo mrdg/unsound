@@ -485,14 +485,11 @@ impl View {
                 }
 
                 if let Some((pattern, selection)) = &self.clipboard {
-                    match key {
-                        Key::Ctrl('v') => {
-                            let msg =
-                                ctx.update_pattern(|p| p.copy(self.cursor.pos, pattern, selection));
-                            self.clipboard = None;
-                            return Ok(msg);
-                        }
-                        _ => {}
+                    if let Key::Ctrl('v') = key {
+                        let msg =
+                            ctx.update_pattern(|p| p.copy(self.cursor.pos, pattern, selection));
+                        self.clipboard = None;
+                        return Ok(msg);
                     }
                 }
 
