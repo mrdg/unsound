@@ -794,6 +794,6 @@ impl Cursor {
     }
 
     fn end(&mut self) {
-        self.pos.column = self.pattern_size.lines - 1;
+        self.pos.column = self.pattern_size.columns - 1;
     }
 }
