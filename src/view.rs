@@ -465,10 +465,6 @@ impl View {
             Focus::Editor => {
                 if let Some(s) = &mut self.selection {
                     match key {
-                        Key::Ctrl('n') | Key::Down => self.cursor.down(),
-                        Key::Ctrl('p') | Key::Up => self.cursor.up(),
-                        Key::Ctrl('f') | Key::Right => self.cursor.right(),
-                        Key::Ctrl('b') | Key::Left => self.cursor.left(),
                         Key::Ctrl('y') => {
                             self.clipboard = Some((ctx.selected_pattern().clone(), s.clone()));
                             self.selection = None;
@@ -480,8 +476,6 @@ impl View {
                         }
                         _ => {}
                     }
-                    s.move_to(self.cursor.pos);
-                    return Ok(Noop);
                 }
 
                 if let Some((pattern, selection)) = &self.clipboard {
@@ -544,6 +538,9 @@ impl View {
                         return Ok(msg);
                     }
                     _ => {}
+                }
+                if let Some(s) = &mut self.selection {
+                    s.move_to(self.cursor.pos);
                 }
             }
             Focus::CommandLine => {}
