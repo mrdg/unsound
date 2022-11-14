@@ -11,6 +11,7 @@ use crate::pattern::Pattern;
 use crate::pattern::Position;
 use crate::pattern::Selection;
 use crate::pattern::StepSize;
+use crate::pattern::INPUTS_PER_STEP;
 pub use crate::view::context::ViewContext;
 pub use crate::view::editor::{Editor, EditorState};
 use anyhow::{anyhow, Result};
@@ -510,6 +511,8 @@ impl View {
                     Key::Ctrl('b') | Key::Left => self.cursor.left(),
                     Key::Ctrl('a') | Key::Home => self.cursor.start(),
                     Key::Ctrl('e') | Key::End => self.cursor.end(),
+                    Key::Alt('f') => self.cursor.next_track(),
+                    Key::Alt('b') => self.cursor.prev_track(),
                     Key::Ctrl('d') => return Ok(NextPattern),
                     Key::Ctrl('u') => return Ok(PrevPattern),
                     Key::Char('[') => {
@@ -784,6 +787,19 @@ impl Cursor {
 
     fn right(&mut self) {
         self.pos.column = usize::min(self.pattern_size.columns - 1, self.pos.column + 1);
+    }
+
+    fn next_track(&mut self) {
+        let col = self.pos.column + INPUTS_PER_STEP;
+        if col <= self.pattern_size.columns {
+            self.pos.column = col;
+        }
+    }
+
+    fn prev_track(&mut self) {
+        if self.pos.track() > 0 {
+            self.pos.column -= INPUTS_PER_STEP;
+        }
     }
 
     fn start(&mut self) {
