@@ -24,7 +24,7 @@ impl<'a> ViewContext<'a> {
         app_state: &'a AppState,
         engine_state: &'a EngineState,
         file_browser: &'a FileBrowser,
-    ) -> ViewContext {
+    ) -> ViewContext<'a> {
         Self {
             device_params,
             app_state,
