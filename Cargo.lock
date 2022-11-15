@@ -883,7 +883,6 @@ dependencies = [
  "hound",
  "lazy_static",
  "lru",
- "num-traits",
  "param_derive",
  "rand",
  "ringbuf",
