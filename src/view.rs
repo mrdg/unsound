@@ -27,6 +27,8 @@ use tui::{
     Frame,
 };
 
+const BORDER_COLOR: Color = Color::DarkGray;
+
 pub struct View {
     frames: usize,
     cursor: Cursor,
@@ -81,6 +83,7 @@ impl View {
                 ]
                 .as_ref(),
             )
+            .horizontal_margin(1)
             .split(screen);
 
         let main = sections[0];
@@ -90,7 +93,9 @@ impl View {
         self.render_main(f, ctx, main);
         self.render_command_line(f, ctx, command);
 
-        let block = Block::default().borders(Borders::all());
+        let block = Block::default()
+            .borders(Borders::TOP | Borders::BOTTOM)
+            .border_style(Style::default().fg(BORDER_COLOR));
         let area = block.inner(status);
         f.render_widget(block, status);
         self.render_status_line(f, ctx, area);
@@ -105,22 +110,30 @@ impl View {
     }
 
     fn render_status_line<B: Backend>(&mut self, f: &mut Frame<B>, ctx: ViewContext, area: Rect) {
-        let s = format!(
-            " *Untitled*    BPM {}    LPB {}    Oct {}",
-            ctx.bpm(),
-            ctx.lines_per_beat(),
-            ctx.octave()
-        );
-        let p = Paragraph::new(s).alignment(Alignment::Left);
-        f.render_widget(p, area);
+        let style = Style::default();
 
         let p = Paragraph::new(format!(
-            "[ {:0width$} . {:0width$} ]   ",
+            " [ {:0width$} . {:0width$} ] ",
             ctx.active_pattern_index(),
             ctx.current_line(),
             width = 3
         ))
-        .alignment(Alignment::Right);
+        .alignment(Alignment::Left)
+        .style(style);
+        f.render_widget(p, area);
+
+        let p = Paragraph::new("*Untitled*")
+            .alignment(Alignment::Center)
+            .style(style);
+        f.render_widget(p, area);
+
+        let s = format!(
+            "BPM {}    LPB {}    Oct {}  ",
+            ctx.bpm(),
+            ctx.lines_per_beat(),
+            ctx.octave()
+        );
+        let p = Paragraph::new(s).alignment(Alignment::Right).style(style);
         f.render_widget(p, area);
     }
 
@@ -128,6 +141,7 @@ impl View {
         let sections = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(80), Constraint::Percentage(20)].as_ref())
+            .horizontal_margin(1)
             .split(area);
 
         let editor = sections[0];
@@ -147,13 +161,17 @@ impl View {
             .split(area);
 
         // Pattern list
-        let block = Block::default().borders(Borders::all()).title("Track");
+        let block = Block::default()
+            .borders(Borders::TOP)
+            .border_style(Style::default().fg(BORDER_COLOR));
         let area = block.inner(sections[0]);
         f.render_widget(block, sections[0]);
         self.render_patterns(f, ctx, area);
 
         // Editor
-        let block = Block::default().borders(Borders::TOP | Borders::BOTTOM);
+        let block = Block::default()
+            .borders(Borders::TOP)
+            .border_style(Style::default().fg(BORDER_COLOR));
         let area = block.inner(sections[1]);
         f.render_widget(block, sections[1]);
 
@@ -162,8 +180,8 @@ impl View {
     }
 
     fn render_patterns<B: Backend>(&mut self, f: &mut Frame<B>, ctx: ViewContext, area: Rect) {
-        let right = area.width / 2;
-        let left = right + 1; // add 1 for right border
+        let right = area.width / 2 + 2;
+        let left = area.width - right;
 
         let sections = Layout::default()
             .direction(Direction::Horizontal)
@@ -190,41 +208,9 @@ impl View {
                 } else {
                     Span::styled(" ", Style::default())
                 };
-                let looped = if ctx.loop_contains(i) { "~" } else { " " };
                 ListItem::new(Spans::from(vec![
                     play_indicator,
-                    Span::raw(" "),
-                    Span::raw(format!("{:0width$}", i, width = 2)),
-                    Span::raw(" "),
-                    Span::raw(looped),
-                ]))
-            })
-            .collect();
-
-        let highlight_style = if self.focus == Focus::Patterns {
-            Style::default().fg(Color::Black).bg(Color::Green)
-        } else {
-            Style::default()
-        };
-        let patterns = ListView::new(patterns)
-            .highlight_style(highlight_style)
-            .block(Block::default().borders(Borders::RIGHT));
-        f.render_stateful_widget(patterns, sections[0], &mut self.patterns.state);
-
-        let patterns: Vec<ListItem> = ctx
-            .song()
-            .iter()
-            .enumerate()
-            .map(|(i, pattern_id)| {
-                let selected = if i == selected_idx {
-                    Span::raw(" >")
-                } else {
-                    Span::raw("  ")
-                };
-                ListItem::new(Spans::from(vec![
-                    Span::raw("  "),
-                    Span::raw(format!("{:0width$}", pattern_id, width = 2)),
-                    selected,
+                    Span::raw(format!("{:width$}", i, width = 2)),
                 ]))
             })
             .collect();
@@ -235,6 +221,29 @@ impl View {
             Style::default()
         };
         let patterns = ListView::new(patterns).highlight_style(highlight_style);
+        f.render_stateful_widget(patterns, sections[0], &mut self.patterns.state);
+
+        let patterns: Vec<ListItem> = ctx
+            .song2()
+            .enumerate()
+            .map(|(i, pattern)| {
+                let selected = if i == selected_idx { ">" } else { " " };
+                let looped = if ctx.loop_contains(i) { "~" } else { " " };
+                ListItem::new(Spans::from(vec![
+                    Span::raw(" "),
+                    Span::styled("▆▆", Style::default().fg(pattern.color)),
+                    Span::raw(" "),
+                    Span::raw(looped),
+                    Span::raw(selected),
+                ]))
+            })
+            .collect();
+
+        let patterns = ListView::new(patterns).block(
+            Block::default()
+                .borders(Borders::RIGHT)
+                .border_style(Style::default().fg(BORDER_COLOR)),
+        );
         f.render_stateful_widget(patterns, sections[1], &mut self.patterns.state);
     }
 
@@ -261,7 +270,11 @@ impl View {
                     .collect();
 
                 let tracks = ListView::new(tracks)
-                    .block(Block::default().borders(Borders::ALL).title("Tracks"))
+                    .block(
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .border_style(Style::default().fg(BORDER_COLOR)),
+                    )
                     .highlight_style(highlight_style);
                 f.render_stateful_widget(tracks, area, &mut self.tracks.state);
             }
@@ -280,7 +293,12 @@ impl View {
                     .clone()
                     .unwrap_or(format!("Track {track_idx}"));
                 let devices = ListView::new(devices)
-                    .block(Block::default().borders(Borders::ALL).title(track_name))
+                    .block(
+                        Block::default()
+                            .title(track_name)
+                            .borders(Borders::ALL)
+                            .border_style(Style::default().fg(BORDER_COLOR)),
+                    )
                     .highlight_style(highlight_style);
                 f.render_stateful_widget(devices, area, &mut self.devices.state);
             }
@@ -309,7 +327,12 @@ impl View {
                     .as_ref();
 
                 let params = ListView::new(params)
-                    .block(Block::default().borders(Borders::ALL).title(name))
+                    .block(
+                        Block::default()
+                            .title(name)
+                            .borders(Borders::ALL)
+                            .border_style(Style::default().fg(BORDER_COLOR)),
+                    )
                     .highlight_style(highlight_style);
                 f.render_stateful_widget(params, area, &mut self.params.state);
             }
@@ -334,7 +357,11 @@ impl View {
                     })
                     .collect();
                 let instruments = ListView::new(instruments)
-                    .block(Block::default().borders(Borders::ALL).title("Instruments"))
+                    .block(
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .border_style(Style::default().fg(BORDER_COLOR)),
+                    )
                     .highlight_style(highlight_style);
                 f.render_stateful_widget(instruments, area, &mut self.instruments.state);
             }
@@ -345,12 +372,15 @@ impl View {
         let sections = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Ratio(1, 3), Constraint::Ratio(2, 3)].as_ref())
+            .horizontal_margin(1)
             .split(area);
 
         self.render_project_tree(f, ctx, sections[0]);
 
         // File Browser
-        let file_block = Block::default().borders(Borders::all()).title("Files");
+        let file_block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(BORDER_COLOR));
         let file_sections = Layout::default()
             .direction(Direction::Vertical)
             .constraints(
@@ -379,8 +409,11 @@ impl View {
         f.render_stateful_widget(files, file_sections[0], &mut self.files.state);
 
         let dir = shorten_path(&ctx.file_browser.dir, file_sections[1].width as usize - 8);
-        let header =
-            Paragraph::new(format!(" {}", dir)).block(Block::default().borders(Borders::TOP));
+        let header = Paragraph::new(format!(" {}", dir)).block(
+            Block::default()
+                .borders(Borders::TOP)
+                .border_style(Style::default().fg(BORDER_COLOR)),
+        );
         f.render_widget(header, file_sections[1]);
     }
 
@@ -714,7 +747,7 @@ fn shorten_path(path: &Utf8PathBuf, width: usize) -> String {
     }
 }
 
-const PATTERN_SECTION_WIDTH: usize = "|> 01 ~|  01  |".len();
+const PATTERN_SECTION_WIDTH: usize = "> 01 XX ~>|".len();
 
 struct List {
     pos: usize,

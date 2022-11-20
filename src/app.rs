@@ -4,6 +4,7 @@ use camino::Utf8PathBuf;
 use lru::LruCache;
 use ringbuf::{Producer, RingBuffer};
 use triple_buffer::{Input, Output, TripleBuffer};
+use tui::style::Color;
 use ulid::Ulid;
 
 use crate::engine::{self, Engine, Plugin, INSTRUMENT_TRACKS};
@@ -170,11 +171,13 @@ impl App {
                 self.state.song.insert(idx + 1, pattern_id);
             }
             ClonePattern(idx) => {
-                let pattern_id = self.state.song[idx];
-                let clone = self.state.patterns.get(&pattern_id).unwrap().clone();
-                let id = self.next_pattern_id();
-                self.state.patterns.insert(id, clone);
-                self.state.song.insert(idx + 1, id);
+                let id = self.state.song[idx];
+                let p1: &Pattern = self.state.patterns.get(&id).unwrap();
+                let mut p2 = p1.clone();
+                p2.color = random_color();
+                let new_id = self.next_pattern_id();
+                self.state.patterns.insert(new_id, Arc::new(p2));
+                self.state.song.insert(idx + 1, new_id);
             }
             SetPatternLen(len) => self.update_pattern(|p| p.set_len(len)),
             ChangeDir(dir) => self.file_browser.move_to(dir)?,
@@ -501,4 +504,11 @@ impl TrackId {
     pub fn new() -> Self {
         Self(Ulid::new())
     }
+}
+
+pub fn random_color() -> Color {
+    let r = rand::random::<u8>();
+    let g = rand::random::<u8>();
+    let b = rand::random::<u8>();
+    Color::Rgb(r, g, b)
 }

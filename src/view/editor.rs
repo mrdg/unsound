@@ -13,6 +13,8 @@ use tui::{
     widgets::{Block, Borders, StatefulWidget, Widget},
 };
 
+use super::BORDER_COLOR;
+
 #[derive(Clone, Default)]
 pub struct EditorState {
     line_offset: usize,
@@ -100,7 +102,11 @@ impl<'a> Editor<'a> {
         let volume = format!("{:.2}", track.volume());
         let volume = Paragraph::new(volume)
             .alignment(tui::layout::Alignment::Center)
-            .block(Block::default().borders(Borders::TOP));
+            .block(
+                Block::default()
+                    .borders(Borders::TOP)
+                    .border_style(Style::default().fg(BORDER_COLOR)),
+            );
         volume.render(volume_area, buf);
 
         let button_area = Rect {
@@ -111,7 +117,9 @@ impl<'a> Editor<'a> {
         };
 
         if track.is_bus() {
-            let block = Block::default().borders(Borders::TOP);
+            let block = Block::default()
+                .borders(Borders::TOP)
+                .border_style(Style::default().fg(BORDER_COLOR));
             block.render(button_area, buf);
             return;
         }
@@ -125,7 +133,11 @@ impl<'a> Editor<'a> {
         let button = Span::styled(format!(" {} ", track.index), button_style);
         let button = Paragraph::new(button)
             .alignment(tui::layout::Alignment::Center)
-            .block(Block::default().borders(Borders::TOP));
+            .block(
+                Block::default()
+                    .borders(Borders::TOP)
+                    .border_style(Style::default().fg(BORDER_COLOR)),
+            );
         button.render(button_area, buf);
     }
 
@@ -317,7 +329,9 @@ impl<'a> StatefulWidget for &Editor<'a> {
                 width,
                 height: (last_line - state.line_offset + 2) as u16,
             };
-            let block = Block::default().borders(borders);
+            let block = Block::default()
+                .borders(borders)
+                .border_style(Style::default().fg(BORDER_COLOR));
             let inner = block.inner(area);
             block.render(area, buf);
             self.render_track_header(inner, buf, track);
@@ -333,7 +347,9 @@ impl<'a> StatefulWidget for &Editor<'a> {
                 height: mixer_area.height,
             };
             borders |= Borders::TOP;
-            let block = Block::default().borders(borders);
+            let block = Block::default()
+                .borders(borders)
+                .border_style(Style::default().fg(BORDER_COLOR));
             let inner = block.inner(area);
             block.render(area, buf);
             self.render_mixer_controls(track, inner, buf);

@@ -1,4 +1,6 @@
-use crate::engine::TICKS_PER_LINE;
+use tui::style::Color;
+
+use crate::{app::random_color, engine::TICKS_PER_LINE};
 use std::ops::{Add, Sub};
 
 pub const INPUTS_PER_STEP: usize = 6;
@@ -83,6 +85,7 @@ impl Rect {
 
 #[derive(Clone, Debug)]
 pub struct Pattern {
+    pub color: Color,
     pub tracks: Vec<Track>,
 }
 
@@ -94,7 +97,10 @@ impl Pattern {
                 steps: vec![Step::default(); DEFAULT_PATTERN_LEN],
             })
         }
-        Self { tracks }
+        Self {
+            color: random_color(),
+            tracks,
+        }
     }
 
     pub fn size(&self) -> Rect {

@@ -112,6 +112,13 @@ impl<'a> ViewContext<'a> {
         &self.app().song
     }
 
+    pub fn song2(&self) -> impl Iterator<Item = &Arc<Pattern>> {
+        self.app()
+            .song
+            .iter()
+            .map(|id| self.app().patterns.get(id).unwrap())
+    }
+
     pub fn loop_contains(&self, idx: usize) -> bool {
         if let Some(loop_range) = self.app().loop_range {
             loop_range.0 <= idx && idx <= loop_range.1
