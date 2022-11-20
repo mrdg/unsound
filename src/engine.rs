@@ -161,9 +161,10 @@ impl Engine {
                 EngineCommand::DeleteInstrument(device_id) => {
                     self.instruments.retain(|_, d| !d.deleted || !d.is_idle());
                     let instr = self.instruments.get_mut(&device_id).unwrap();
-                    for (track_id, track) in &self.tracks {
+                    for (track_id, track) in &mut self.tracks {
                         if let Some((_, id)) = track.last_event {
                             if id == device_id {
+                                track.last_event = None;
                                 instr.send_event(Event::new(0, *track_id, Note::Off))
                             }
                         }
