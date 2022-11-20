@@ -266,7 +266,7 @@ impl<'a> StatefulWidget for &Editor<'a> {
             last_line = state.line_offset + std::cmp::min(height, pattern.len());
         }
 
-        if self.cursor.line > last_line {
+        if self.cursor.line >= last_line {
             last_line = self.cursor.line + 1;
             state.line_offset = last_line - height;
         } else if self.cursor.line < state.line_offset {
