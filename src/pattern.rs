@@ -9,7 +9,7 @@ pub const NOTE_OFF: u8 = MAX_PITCH;
 pub const MAX_PATTERNS: usize = 256;
 pub const DEFAULT_VELOCITY: u8 = 100;
 
-const DEFAULT_PATTERN_LEN: usize = 16;
+const DEFAULT_PATTERN_LEN: usize = 32;
 const MAX_PATTERN_LEN: usize = 512;
 const MAX_INSTRUMENT: u8 = 99;
 const MAX_VELOCITY: u8 = 127;
