@@ -12,6 +12,7 @@ use crate::pattern::Position;
 use crate::pattern::Selection;
 use crate::pattern::StepSize;
 use crate::pattern::INPUTS_PER_STEP;
+use crate::sampler;
 pub use crate::view::context::ViewContext;
 pub use crate::view::editor::{Editor, EditorState};
 use anyhow::{anyhow, Result};
@@ -403,7 +404,18 @@ impl View {
             .file_browser
             .entries
             .iter()
-            .map(|path| ListItem::new(Span::raw(format!(" {}", path.file_name().unwrap_or("")))))
+            .map(|path| {
+                let mut style = Style::default();
+                if path.is_dir() {
+                    style = style.fg(Color::Blue)
+                } else if !sampler::can_load_file(path) {
+                    style = style.fg(Color::DarkGray)
+                }
+                ListItem::new(Span::styled(
+                    format!(" {}", path.file_name().unwrap_or(""),),
+                    style,
+                ))
+            })
             .collect();
         let files = ListView::new(files).highlight_style(highlight_style);
         f.render_stateful_widget(files, file_sections[0], &mut self.files.state);
@@ -603,15 +615,19 @@ impl View {
                     }
                     Key::Char(' ') => {
                         let selected_path = &ctx.file_browser.entries[self.files.pos];
-                        return Ok(PreviewSound(selected_path.to_path_buf()));
+                        if sampler::can_load_file(selected_path) {
+                            return Ok(PreviewSound(selected_path.to_path_buf()));
+                        }
                     }
                     Key::Char('\n') => {
                         let selected_path = &ctx.file_browser.entries[self.files.pos];
                         let msg = if selected_path.is_dir() {
                             self.files = List::default();
                             ChangeDir(selected_path.to_path_buf())
-                        } else {
+                        } else if sampler::can_load_file(selected_path) {
                             LoadSound(self.instruments.pos, selected_path.to_path_buf())
+                        } else {
+                            Noop
                         };
                         return Ok(msg);
                     }

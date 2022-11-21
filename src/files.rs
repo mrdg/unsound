@@ -24,10 +24,8 @@ impl FileBrowser {
         self.entries.clear();
         for entry in fs::read_dir(path.as_ref())? {
             let entry = entry?;
-            if entry.path().is_dir() || entry.path().extension().map_or(false, |ext| ext == "wav") {
-                let path = entry.path().canonicalize()?.try_into()?;
-                self.entries.push(path);
-            }
+            let path = entry.path().canonicalize()?.try_into()?;
+            self.entries.push(path);
         }
         self.entries.sort();
         Ok(())

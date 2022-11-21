@@ -287,6 +287,10 @@ fn map(v: f32, from: (f32, f32), to: (f32, f32)) -> f32 {
     (v - from.0) * (to.1 - to.0) / (from.1 - from.0) + to.0
 }
 
+pub fn can_load_file(path: &Utf8PathBuf) -> bool {
+    path.extension().map_or(false, |ext| ext == "wav")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
