@@ -225,7 +225,7 @@ impl View {
         f.render_stateful_widget(patterns, sections[0], &mut self.patterns.state);
 
         let patterns: Vec<ListItem> = ctx
-            .song2()
+            .song_iter()
             .enumerate()
             .map(|(i, pattern)| {
                 let selected = if i == selected_idx { ">" } else { " " };

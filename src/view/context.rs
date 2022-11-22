@@ -112,7 +112,7 @@ impl<'a> ViewContext<'a> {
         &self.app().song
     }
 
-    pub fn song2(&self) -> impl Iterator<Item = &Arc<Pattern>> {
+    pub fn song_iter(&self) -> impl Iterator<Item = &Arc<Pattern>> {
         self.app()
             .song
             .iter()

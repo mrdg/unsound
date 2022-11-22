@@ -40,9 +40,9 @@ static A: AllocDisabler = AllocDisabler;
 const SAMPLE_RATE: f64 = 44100.0;
 const FRAMES_PER_BUFFER: usize = 128;
 
-// Allocate buffer size x 2, because sometimes cpal requests more than the
+// Allocate a larger buffer size, because sometimes cpal requests more than the
 // configured buffer size when switching the output device.
-const INTERNAL_BUFFER_SIZE: usize = 2 * FRAMES_PER_BUFFER;
+const INTERNAL_BUFFER_SIZE: usize = 4 * FRAMES_PER_BUFFER;
 
 fn main() {
     match run() {
