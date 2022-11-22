@@ -196,21 +196,9 @@ impl View {
             .iter()
             .enumerate()
             .map(|(i, _)| {
-                let play_indicator = if i == active_idx {
-                    let style = Style::default().fg(Color::Blue);
-                    if ctx.is_playing() {
-                        self.animate(
-                            vec![Span::styled("▶", style), Span::raw(" ")],
-                            Duration::from_secs_f64(60.0 / ctx.bpm() as f64),
-                        )
-                    } else {
-                        Span::styled("▶", style)
-                    }
-                } else {
-                    Span::styled(" ", Style::default())
-                };
+                let selected = if i == selected_idx { ">" } else { " " };
                 ListItem::new(Spans::from(vec![
-                    play_indicator,
+                    Span::raw(selected),
                     Span::raw(format!("{:width$}", i, width = 2)),
                 ]))
             })
@@ -228,14 +216,26 @@ impl View {
             .song_iter()
             .enumerate()
             .map(|(i, pattern)| {
-                let selected = if i == selected_idx { ">" } else { " " };
                 let looped = if ctx.loop_contains(i) { "~" } else { " " };
+                let play_indicator = if i == active_idx {
+                    let style = Style::default().fg(Color::Blue);
+                    if ctx.is_playing() {
+                        self.animate(
+                            vec![Span::styled("▶", style), Span::raw(" ")],
+                            Duration::from_secs_f64(60.0 / ctx.bpm() as f64),
+                        )
+                    } else {
+                        Span::styled("▶", style)
+                    }
+                } else {
+                    Span::styled(" ", Style::default())
+                };
                 ListItem::new(Spans::from(vec![
                     Span::raw(" "),
                     Span::styled("▆▆", Style::default().fg(pattern.color)),
                     Span::raw(" "),
-                    Span::raw(looped),
-                    Span::raw(selected),
+                    Span::styled(looped, Style::default().fg(Color::Blue)),
+                    play_indicator,
                 ]))
             })
             .collect();
