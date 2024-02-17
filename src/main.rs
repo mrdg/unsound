@@ -111,6 +111,7 @@ fn run_audio(mut app_state: Output<AppState>, mut engine: Engine) -> Result<cpal
             });
         },
         move |err| eprintln!("error while processing audio {}", err),
+        None,
     )?;
 
     Ok(stream)
