@@ -1,6 +1,6 @@
 use tui::style::Color;
 
-use crate::{app::random_color, engine::TICKS_PER_LINE};
+use crate::{app::random_color, engine::INSTRUMENT_TRACKS, engine::TICKS_PER_LINE};
 use std::ops::{Add, Sub};
 
 pub const INPUTS_PER_STEP: usize = 6;
@@ -11,7 +11,6 @@ pub const DEFAULT_VELOCITY: u8 = 100;
 
 const DEFAULT_PATTERN_LEN: usize = 32;
 const MAX_PATTERN_LEN: usize = 512;
-const MAX_INSTRUMENT: u8 = 99;
 const MAX_VELOCITY: u8 = 127;
 
 const FX_CHORD: char = 'C';
@@ -327,7 +326,7 @@ impl Step {
                 }
             }
             Instr => {
-                if val > MAX_INSTRUMENT {
+                if val as usize >= INSTRUMENT_TRACKS {
                     return;
                 }
             }
