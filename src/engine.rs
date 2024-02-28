@@ -181,6 +181,7 @@ impl Engine {
                     }
                     let instr = self.instruments.get_mut(&device_id).unwrap();
                     let note = Note::On(pitch, DEFAULT_VELOCITY);
+                    track.last_event = Some((0, device_id));
                     instr.send_event(Event::new(0, track_id, note));
                 }
             }
