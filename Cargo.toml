@@ -4,14 +4,11 @@ version = "0.1.0"
 authors = ["Menno de Gier <mrdegier@gmail.com>"]
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [workspace]
-members = [
-  "param_derive",
-]
+members = ["param_derive"]
 
 [dependencies]
+
 param_derive = { path = "param_derive" }
 hound = "3.4.0"
 tui = "0.13"
@@ -21,7 +18,11 @@ anyhow = "1.0.38"
 lazy_static = "1.4.0"
 camino = "1.0.4"
 cpal = "0.15.2"
-assert_no_alloc = "1.1.2"
+backtrace = "0.3.69"
+# There's no release with backtrace support yet
+assert_no_alloc = { git = "https://github.com/Windfisch/rust-assert-no-alloc", features = [
+    "backtrace",
+] }
 triple_buffer = "6.0.0"
 rand = "0.8.5"
 atomic_float = "0.1.0"
@@ -30,5 +31,6 @@ lru = "0.8.1"
 
 [features]
 
-[profile.release]
-debug = true
+[profile.dev]
+# Without optimizations the app is too slow in dev builds
+opt-level = 3
