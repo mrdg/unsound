@@ -25,9 +25,9 @@ use triple_buffer::Output;
 use view::{InputQueue, ViewContext};
 
 use crate::view::View;
+use ratatui::{backend::TermionBackend, Terminal};
 use std::io;
 use termion::{input::MouseTerminal, raw::IntoRawMode, screen::AlternateScreen};
-use tui::{backend::TermionBackend, Terminal};
 
 use crate::app::{App, AppState};
 

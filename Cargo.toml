@@ -11,7 +11,6 @@ members = ["param_derive"]
 
 param_derive = { path = "param_derive" }
 hound = "3.4.0"
-tui = "0.13"
 termion = "1.5"
 ringbuf = "0.2.2"
 anyhow = "1.0.38"
@@ -29,6 +28,9 @@ atomic_float = "0.1.0"
 ulid = "1.0.0"
 lru = "0.8.1"
 basedrop = "0.1.2"
+ratatui = { version = "0.26.1", default-features = false, features = [
+    "termion",
+] }
 
 [features]
 

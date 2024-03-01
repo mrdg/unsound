@@ -1,4 +1,4 @@
-use tui::style::Color;
+use ratatui::style::Color;
 
 use crate::{app::random_color, engine::INSTRUMENT_TRACKS, engine::TICKS_PER_LINE};
 use std::ops::{Add, Sub};

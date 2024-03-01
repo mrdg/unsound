@@ -17,16 +17,15 @@ pub use crate::view::context::ViewContext;
 pub use crate::view::editor::{Editor, EditorState};
 use anyhow::{anyhow, Result};
 use camino::Utf8PathBuf;
-use termion::event::Key;
-use tui::{
-    backend::Backend,
+use ratatui::{
     layout::Rect,
     layout::{Alignment, Constraint, Direction, Layout},
     style::{Color, Style},
-    text::{Span, Spans},
+    text::{Line, Span},
     widgets::{Block, Borders, List as ListView, ListItem, ListState, Paragraph},
     Frame,
 };
+use termion::event::Key;
 
 const BORDER_COLOR: Color = Color::DarkGray;
 
@@ -69,7 +68,7 @@ impl View {
 }
 
 impl View {
-    pub fn render<B: Backend>(&mut self, f: &mut Frame<B>, ctx: ViewContext) {
+    pub fn render(&mut self, f: &mut Frame, ctx: ViewContext) {
         self.set_state(ctx);
         self.frames += 1;
 
@@ -102,15 +101,15 @@ impl View {
         self.render_status_line(f, ctx, area);
     }
 
-    fn render_command_line<B: Backend>(&mut self, f: &mut Frame<B>, _ctx: ViewContext, area: Rect) {
+    fn render_command_line(&mut self, f: &mut Frame, _ctx: ViewContext, area: Rect) {
         if !self.command.is_empty() {
-            let spans = Spans::from(vec![Span::raw(":"), Span::raw(&*self.command)]);
+            let spans = Line::from(vec![Span::raw(":"), Span::raw(&*self.command)]);
             let p = Paragraph::new(spans);
             f.render_widget(p, area)
         }
     }
 
-    fn render_status_line<B: Backend>(&mut self, f: &mut Frame<B>, ctx: ViewContext, area: Rect) {
+    fn render_status_line(&mut self, f: &mut Frame, ctx: ViewContext, area: Rect) {
         let style = Style::default();
 
         let p = Paragraph::new(format!(
@@ -138,7 +137,7 @@ impl View {
         f.render_widget(p, area);
     }
 
-    fn render_main<B: Backend>(&mut self, f: &mut Frame<B>, ctx: ViewContext, area: Rect) {
+    fn render_main(&mut self, f: &mut Frame, ctx: ViewContext, area: Rect) {
         let sections = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(80), Constraint::Percentage(20)].as_ref())
@@ -152,7 +151,7 @@ impl View {
         self.render_sidebar(f, ctx, sidebar);
     }
 
-    fn render_editor<B: Backend>(&mut self, f: &mut Frame<B>, ctx: ViewContext, area: Rect) {
+    fn render_editor(&mut self, f: &mut Frame, ctx: ViewContext, area: Rect) {
         let sections = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
@@ -180,7 +179,7 @@ impl View {
         f.render_stateful_widget(&editor, area, &mut self.editor);
     }
 
-    fn render_patterns<B: Backend>(&mut self, f: &mut Frame<B>, ctx: ViewContext, area: Rect) {
+    fn render_patterns(&mut self, f: &mut Frame, ctx: ViewContext, area: Rect) {
         let right = area.width / 2 + 2;
         let left = area.width - right;
 
@@ -197,7 +196,7 @@ impl View {
             .enumerate()
             .map(|(i, _)| {
                 let selected = if i == selected_idx { ">" } else { " " };
-                ListItem::new(Spans::from(vec![
+                ListItem::new(Line::from(vec![
                     Span::raw(selected),
                     Span::raw(format!("{:width$}", i, width = 2)),
                 ]))
@@ -230,7 +229,7 @@ impl View {
                 } else {
                     Span::styled(" ", Style::default())
                 };
-                ListItem::new(Spans::from(vec![
+                ListItem::new(Line::from(vec![
                     Span::raw(" "),
                     Span::styled("▆▆", Style::default().fg(pattern.color)),
                     Span::raw(" "),
@@ -248,7 +247,7 @@ impl View {
         f.render_stateful_widget(patterns, sections[1], &mut self.patterns.state);
     }
 
-    fn render_project_tree<B: Backend>(&mut self, f: &mut Frame<B>, ctx: ViewContext, area: Rect) {
+    fn render_project_tree(&mut self, f: &mut Frame, ctx: ViewContext, area: Rect) {
         let highlight_style = if self.focus == Focus::ProjectTree {
             Style::default().fg(Color::Black).bg(Color::Green)
         } else {
@@ -354,7 +353,7 @@ impl View {
                             .map(|instr| instr.name.as_ref())
                             .unwrap_or("");
                         let snd_desc = Span::raw(format!(" {:0width$} {}", i, name, width = 2));
-                        ListItem::new(Spans::from(vec![selected, snd_desc]))
+                        ListItem::new(Line::from(vec![selected, snd_desc]))
                     })
                     .collect();
                 let instruments = ListView::new(instruments)
@@ -369,7 +368,7 @@ impl View {
         };
     }
 
-    fn render_sidebar<B: Backend>(&mut self, f: &mut Frame<B>, ctx: ViewContext, area: Rect) {
+    fn render_sidebar(&mut self, f: &mut Frame, ctx: ViewContext, area: Rect) {
         let sections = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Ratio(1, 3), Constraint::Ratio(2, 3)].as_ref())
@@ -386,8 +385,8 @@ impl View {
             .direction(Direction::Vertical)
             .constraints(
                 [
-                    Constraint::Length(sections[1].height - 4),
-                    Constraint::Length(4),
+                    Constraint::Length(sections[1].height - 2),
+                    Constraint::Length(2),
                 ]
                 .as_ref(),
             )

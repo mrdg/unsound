@@ -3,13 +3,13 @@ use std::ops::Range;
 use crate::pattern::{Position, Selection, INPUTS_PER_STEP, MAX_PITCH};
 use crate::view::context::{TrackView, ViewContext};
 use crate::view::Focus;
-use tui::layout::{Alignment, Constraint, Direction, Layout};
-use tui::widgets::Paragraph;
-use tui::{
+use ratatui::layout::{Alignment, Constraint, Direction, Layout};
+use ratatui::widgets::Paragraph;
+use ratatui::{
     buffer::Buffer,
     layout::Rect,
     style::{Color, Style},
-    text::{Span, Spans},
+    text::{Line, Span},
     widgets::{Block, Borders, StatefulWidget, Widget},
 };
 
@@ -81,12 +81,12 @@ impl<'a> Editor<'a> {
             let channel_width = meter_width / 2;
             let meter_symbol = "▇".repeat(channel_width.into());
 
-            let spans = Spans::from(vec![
+            let spans = Line::from(vec![
                 Span::styled(&meter_symbol, Style::default().fg(left_color)),
                 Span::raw(" "),
                 Span::styled(&meter_symbol, Style::default().fg(right_color)),
             ]);
-            buf.set_spans(meter.x, meter.y + i, &spans, meter_width + 1);
+            buf.set_line(meter.x, meter.y + i, &spans, meter_width + 1);
 
             db -= 6;
         }
@@ -101,7 +101,7 @@ impl<'a> Editor<'a> {
 
         let volume = format!("{:.2}", track.volume());
         let volume = Paragraph::new(volume)
-            .alignment(tui::layout::Alignment::Center)
+            .alignment(Alignment::Center)
             .block(
                 Block::default()
                     .borders(Borders::TOP)
@@ -132,7 +132,7 @@ impl<'a> Editor<'a> {
 
         let button = Span::styled(format!(" {} ", track.index), button_style);
         let button = Paragraph::new(button)
-            .alignment(tui::layout::Alignment::Center)
+            .alignment(Alignment::Center)
             .block(
                 Block::default()
                     .borders(Borders::TOP)
@@ -227,7 +227,7 @@ impl<'a> Editor<'a> {
                 }
             };
 
-            let spans = Spans::from(vec![
+            let spans = Line::from(vec![
                 Span::styled(" ", line_style),
                 Span::styled(pitch, input_style(0)),
                 Span::styled(" ", line_style),
@@ -241,7 +241,7 @@ impl<'a> Editor<'a> {
                 Span::styled(" ", line_style),
             ]);
 
-            buf.set_spans(area.left(), y, &spans, area.width);
+            buf.set_line(area.left(), y, &spans, area.width);
             y += 1;
         }
     }

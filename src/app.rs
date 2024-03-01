@@ -2,9 +2,9 @@ use anyhow::{anyhow, Result};
 use atomic_float::AtomicF64;
 use camino::Utf8PathBuf;
 use lru::LruCache;
+use ratatui::style::Color;
 use ringbuf::{Producer, RingBuffer};
 use triple_buffer::{Input, Output, TripleBuffer};
-use tui::style::Color;
 use ulid::Ulid;
 
 use crate::engine::{self, Engine, Plugin, INSTRUMENT_TRACKS, PREVIEW_INSTRUMENTS_CACHE_SIZE};
