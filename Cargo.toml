@@ -28,6 +28,7 @@ rand = "0.8.5"
 atomic_float = "0.1.0"
 ulid = "1.0.0"
 lru = "0.8.1"
+basedrop = "0.1.2"
 
 [features]
 

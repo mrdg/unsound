@@ -24,7 +24,7 @@ const RMS_WINDOW_SIZE: usize = SAMPLE_RATE as usize / 10 * 3;
 
 pub enum EngineCommand {
     CreateTrack(TrackId, Box<Track>),
-    CreateInstrument(DeviceId, Box<dyn Plugin + Send>),
+    CreateInstrument(DeviceId, basedrop::Owned<Box<dyn Plugin + Send>>),
     DeleteInstrument(DeviceId),
     PlayNote(DeviceId, TrackId, u8),
 }
@@ -248,13 +248,13 @@ impl Default for Track {
 }
 
 struct Device {
-    inner: Box<dyn Plugin + Send>,
+    inner: basedrop::Owned<Box<dyn Plugin + Send>>,
     status: Option<ProcessStatus>,
     deleted: bool,
 }
 
 impl Device {
-    fn new(inner: Box<dyn Plugin + Send>) -> Self {
+    fn new(inner: basedrop::Owned<Box<dyn Plugin + Send>>) -> Self {
         Self {
             status: None,
             deleted: false,

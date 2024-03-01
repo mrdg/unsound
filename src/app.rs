@@ -29,6 +29,7 @@ pub struct App {
     pub device_params: HashMap<DeviceId, Arc<dyn Params>>,
     preview_cache: LruCache<Utf8PathBuf, DeviceId>,
     preview_track_id: TrackId,
+    collector: basedrop::Collector,
 }
 
 impl App {
@@ -53,7 +54,9 @@ impl App {
             LoadSound(idx, path) => {
                 // TODO: keep settings from previous sampler?
                 let snd = sampler::load_file(&path)?;
-                let sampler = Box::new(Sampler::new(snd));
+                let handle = self.collector.handle();
+                let sampler: Box<dyn Plugin + Send> = Box::new(Sampler::new(snd));
+                let sampler = basedrop::Owned::new(&handle, sampler);
                 let sampler_id = DeviceId::new();
                 self.device_params.insert(sampler_id, sampler.params());
 
@@ -103,10 +106,14 @@ impl App {
                     *id
                 } else {
                     let snd = sampler::load_file(&path)?;
-                    let sampler = Box::new(Sampler::new(snd));
+                    let sampler: Box<dyn Plugin + Send> = Box::new(Sampler::new(snd));
                     let sampler_id = DeviceId::new();
+                    let handle = self.collector.handle();
                     self.preview_cache.put(path.clone(), sampler_id);
-                    self.send_to_engine(EngineCommand::CreateInstrument(sampler_id, sampler))?;
+                    self.send_to_engine(EngineCommand::CreateInstrument(
+                        sampler_id,
+                        basedrop::Owned::new(&handle, sampler),
+                    ))?;
                     sampler_id
                 };
                 self.send_to_engine(EngineCommand::PlayNote(
@@ -399,6 +406,7 @@ pub fn new() -> Result<(App, Output<AppState>, Engine, Output<EngineState>)> {
         device_params: HashMap::new(),
         preview_track_id,
         preview_cache,
+        collector: basedrop::Collector::new(),
     };
     Ok((app, app_state_output, engine, engine_state_output))
 }
