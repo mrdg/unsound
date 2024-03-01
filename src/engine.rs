@@ -15,7 +15,9 @@ use crate::pattern::{Note, DEFAULT_VELOCITY};
 use crate::{INTERNAL_BUFFER_SIZE, SAMPLE_RATE};
 
 pub const INSTRUMENT_TRACKS: usize = 16;
-pub const TOTAL_TRACKS: usize = INSTRUMENT_TRACKS + 1; // master track
+pub const PREVIEW_INSTRUMENTS_CACHE_SIZE: usize = 10;
+pub const MAX_INSTRUMENTS: usize = INSTRUMENT_TRACKS + PREVIEW_INSTRUMENTS_CACHE_SIZE;
+pub const TOTAL_TRACKS: usize = INSTRUMENT_TRACKS + 1; // add 1 for master track
 pub const TICKS_PER_LINE: usize = 12;
 
 const RMS_WINDOW_SIZE: usize = SAMPLE_RATE as usize / 10 * 3;
@@ -48,8 +50,11 @@ impl Engine {
         preview_track_id: TrackId,
     ) -> Engine {
         let mut tracks = HashMap::with_capacity(TOTAL_TRACKS);
-        let instruments = HashMap::with_capacity(TOTAL_TRACKS);
         tracks.insert(preview_track_id, Box::new(Track::default()));
+
+        // Double the capacity here. Deleting instruments is asynchronous
+        // so we might have a few more in flight than the max
+        let instruments = HashMap::with_capacity(2 * MAX_INSTRUMENTS);
 
         Self {
             instruments,

@@ -7,7 +7,7 @@ use triple_buffer::{Input, Output, TripleBuffer};
 use tui::style::Color;
 use ulid::Ulid;
 
-use crate::engine::{self, Engine, Plugin, INSTRUMENT_TRACKS};
+use crate::engine::{self, Engine, Plugin, INSTRUMENT_TRACKS, PREVIEW_INSTRUMENTS_CACHE_SIZE};
 use crate::files::FileBrowser;
 use crate::params::Params;
 use crate::pattern::{StepSize, MAX_PATTERNS};
@@ -94,6 +94,11 @@ impl App {
                 }
             }
             PreviewSound(path) => {
+                if self.preview_cache.len() >= PREVIEW_INSTRUMENTS_CACHE_SIZE {
+                    if let Some((_, device_id)) = self.preview_cache.pop_lru() {
+                        self.send_to_engine(EngineCommand::DeleteInstrument(device_id))?;
+                    }
+                }
                 let device_id = if let Some(id) = self.preview_cache.get(&path) {
                     *id
                 } else {
@@ -104,11 +109,6 @@ impl App {
                     self.send_to_engine(EngineCommand::CreateInstrument(sampler_id, sampler))?;
                     sampler_id
                 };
-                if self.preview_cache.len() > 10 {
-                    if let Some((_, device_id)) = self.preview_cache.pop_lru() {
-                        self.send_to_engine(EngineCommand::DeleteInstrument(device_id))?;
-                    }
-                }
                 self.send_to_engine(EngineCommand::PlayNote(
                     device_id,
                     self.preview_track_id,
