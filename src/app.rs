@@ -64,6 +64,7 @@ impl App {
                 self.send_to_engine(cmd)?;
 
                 if let Some(instr) = &self.state.instruments[idx] {
+                    self.device_params.remove(&instr.id);
                     self.send_to_engine(EngineCommand::DeleteInstrument(instr.id))?;
                 }
 
