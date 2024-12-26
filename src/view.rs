@@ -487,6 +487,18 @@ impl View {
                             };
                             Ok(cmd)
                         }
+                        "cd" => {
+                            if parts.len() > 1 {
+                                Ok(ChangeDir(Utf8PathBuf::from(parts[1])))
+                            } else {
+                                let home = std::env::var("HOME")?;
+                                if home.is_empty() {
+                                    Err(anyhow!("cd: invalid argument"))
+                                } else {
+                                    Ok(ChangeDir(home.into()))
+                                }
+                            }
+                        }
                         _ => Err(anyhow!("invalid command {}", parts[0])),
                     };
                     self.command.clear();
