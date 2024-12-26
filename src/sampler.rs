@@ -7,7 +7,7 @@ use crate::pattern::Note;
 use crate::SAMPLE_RATE;
 use anyhow::Result;
 use camino::Utf8PathBuf;
-use hound::WavReader;
+use hound::{SampleFormat, WavReader};
 use param_derive::Params;
 use std::ops::Range;
 use std::sync::Arc;
@@ -154,10 +154,19 @@ pub fn load_file(path: &Utf8PathBuf) -> Result<Sound> {
     let mut wav = WavReader::open(path.clone())?;
     let wav_spec = wav.spec();
     let bit_depth = wav_spec.bits_per_sample as f32;
-    let samples: Vec<Stereo> = wav
-        .samples::<i32>()
-        .map(|sample| sample.unwrap() as f32 / (f32::powf(2., bit_depth - 1.)))
-        .collect::<Vec<f32>>()
+
+    let samples: Vec<f32> = match wav_spec.sample_format {
+        SampleFormat::Int => wav
+            .samples::<i32>()
+            .map(|s| s.unwrap() as f32 / (f32::powf(2., bit_depth - 1.)))
+            .collect::<Vec<f32>>(),
+        SampleFormat::Float => wav
+            .samples::<f32>()
+            .map(|s| s.unwrap())
+            .collect::<Vec<f32>>(),
+    };
+
+    let frames: Vec<Stereo> = samples
         .chunks(wav_spec.channels as usize)
         .map(|f| {
             let left = *f.first().unwrap();
@@ -168,7 +177,7 @@ pub fn load_file(path: &Utf8PathBuf) -> Result<Sound> {
 
     const SILENCE: f32 = 0.01;
     let mut offset = 0;
-    for (i, frame) in samples.iter().enumerate() {
+    for (i, frame) in frames.iter().enumerate() {
         if frame.channel(0) < SILENCE && frame.channel(1) < SILENCE {
             continue;
         } else {
@@ -176,7 +185,7 @@ pub fn load_file(path: &Utf8PathBuf) -> Result<Sound> {
             break;
         }
     }
-    Ok(Sound::new(samples, offset, wav_spec.sample_rate as usize))
+    Ok(Sound::new(frames, offset, wav_spec.sample_rate as usize))
 }
 
 pub struct Sampler {
