@@ -21,15 +21,13 @@ use audio::Stereo;
 use camino::Utf8PathBuf;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use engine::{Engine, INSTRUMENT_TRACKS};
+use ratatui::crossterm::event::{Event, KeyEventKind};
+use ratatui::DefaultTerminal;
 use triple_buffer::Output;
 use view::{InputQueue, ViewContext};
 
-use crate::view::View;
-use ratatui::{backend::TermionBackend, Terminal};
-use std::io;
-use termion::{input::MouseTerminal, raw::IntoRawMode, screen::AlternateScreen};
-
 use crate::app::{App, AppState};
+use crate::view::View;
 
 #[cfg(debug_assertions)]
 #[global_allocator]
@@ -80,7 +78,11 @@ fn run() -> Result<()> {
     let stream = run_audio(app_state, engine)?;
     stream.play()?;
 
-    run_app(app, engine_state)
+    let terminal = ratatui::init();
+
+    let result = run_app(app, engine_state, terminal);
+    ratatui::restore();
+    result
 }
 
 fn run_audio(mut app_state: Output<AppState>, mut engine: Engine) -> Result<cpal::Stream> {
@@ -117,13 +119,12 @@ fn run_audio(mut app_state: Output<AppState>, mut engine: Engine) -> Result<cpal
     Ok(stream)
 }
 
-fn run_app(mut app: App, mut engine_state: Output<EngineState>) -> Result<()> {
+fn run_app(
+    mut app: App,
+    mut engine_state: Output<EngineState>,
+    mut terminal: DefaultTerminal,
+) -> Result<()> {
     let mut input = InputQueue::new();
-    let stdout = io::stdout().into_raw_mode()?;
-    let stdout = MouseTerminal::from(stdout);
-    let stdout = AlternateScreen::from(stdout);
-    let backend = TermionBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
 
     let mut view = View::new();
     loop {
@@ -136,13 +137,16 @@ fn run_app(mut app: App, mut engine_state: Output<EngineState>) -> Result<()> {
         terminal.draw(|f| view.render(f, ctx))?;
 
         match input.next()? {
-            view::Input::Key(key) => {
-                let msg = view.handle_input(key, ctx);
-                if msg.is_exit() {
-                    return Ok(());
+            view::Input::Event(event) => match event {
+                Event::Key(event) if event.kind == KeyEventKind::Press => {
+                    let msg = view.handle_input(event, ctx);
+                    if msg.is_exit() {
+                        return Ok(());
+                    }
+                    app.send(msg)?;
                 }
-                app.send(msg)?;
-            }
+                _ => {}
+            },
             view::Input::Tick => {}
         }
     }

@@ -1,14 +1,13 @@
 use anyhow::{anyhow, Result};
+use crossterm::event::{self, Event};
 use std::{
-    io,
     sync::mpsc::{self, Receiver},
     thread,
     time::Duration,
 };
-use termion::{event::Key, input::TermRead};
 
 pub enum Input {
-    Key(Key),
+    Event(Event),
     Tick,
 }
 
@@ -21,11 +20,11 @@ impl InputQueue {
         let (sender, receiver) = mpsc::channel();
         {
             let sender = sender.clone();
-            thread::spawn(move || {
-                let stdin = io::stdin();
-                for key in stdin.keys().flatten() {
-                    sender.send(Input::Key(key)).expect("send keyboard input");
-                }
+            thread::spawn(move || loop {
+                let event = event::read().expect("event read");
+                sender
+                    .send(Input::Event(event))
+                    .expect("send keyboard input");
             })
         };
         thread::spawn(move || loop {

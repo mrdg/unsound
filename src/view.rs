@@ -25,7 +25,8 @@ use ratatui::{
     widgets::{Block, Borders, List as ListView, ListItem, ListState, Paragraph},
     Frame,
 };
-use termion::event::Key;
+
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 const BORDER_COLOR: Color = Color::DarkGray;
 
@@ -72,7 +73,7 @@ impl View {
         self.set_state(ctx);
         self.frames += 1;
 
-        let screen = f.size();
+        let screen = f.area();
         let sections = Layout::default()
             .direction(Direction::Vertical)
             .constraints(
@@ -428,7 +429,7 @@ impl View {
         f.render_widget(header, file_sections[1]);
     }
 
-    pub fn handle_input(&mut self, key: Key, ctx: ViewContext) -> Msg {
+    pub fn handle_input(&mut self, key: KeyEvent, ctx: ViewContext) -> Msg {
         match self.handle_input_inner(key, ctx) {
             Ok(change) => change,
             Err(err) => {
@@ -438,10 +439,10 @@ impl View {
         }
     }
 
-    fn handle_input_inner(&mut self, key: Key, ctx: ViewContext) -> Result<Msg> {
+    fn handle_input_inner(&mut self, key: KeyEvent, ctx: ViewContext) -> Result<Msg> {
         use Msg::*;
 
-        if key == Key::Ctrl('w') {
+        if key.code == KeyCode::Char('w') && key.modifiers.contains(KeyModifiers::CONTROL) {
             use Focus::*;
             self.focus = match self.focus {
                 Patterns => Editor,
@@ -453,14 +454,14 @@ impl View {
             return Ok(Noop);
         }
 
-        if key == Key::Char(':') && self.focus != Focus::CommandLine {
+        if key.code == KeyCode::Char(':') && self.focus != Focus::CommandLine {
             self.focus = Focus::CommandLine;
             return Ok(Noop);
         }
 
         if self.focus == Focus::CommandLine {
-            match key {
-                Key::Char('\n') => {
+            match key.code {
+                KeyCode::Enter => {
                     let parts: Vec<&str> = self.command.split_whitespace().collect();
                     if parts.is_empty() {
                         return Err(anyhow!("invalid command"));
@@ -505,14 +506,14 @@ impl View {
                     self.focus = Focus::Editor;
                     return msg;
                 }
-                Key::Backspace => {
+                KeyCode::Backspace => {
                     self.command.pop();
                 }
-                Key::Char(char) => self.command.push(char),
-                Key::Esc => self.command.clear(),
+                KeyCode::Char(char) => self.command.push(char),
+                KeyCode::Esc => self.command.clear(),
                 _ => return Ok(Noop),
             }
-            if key == Key::Esc || key == Key::Char('\n') {
+            if key.code == KeyCode::Esc || key.code == KeyCode::Enter {
                 self.focus = Focus::Editor;
                 return Ok(Noop);
             }
@@ -521,13 +522,13 @@ impl View {
         match self.focus {
             Focus::Editor => {
                 if let Some(s) = &mut self.selection {
-                    match key {
-                        Key::Ctrl('y') => {
+                    match key.code {
+                        KeyCode::Char('y') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                             self.clipboard = Some((ctx.selected_pattern().clone(), s.clone()));
                             self.selection = None;
                             return Ok(Noop);
                         }
-                        Key::Esc => {
+                        KeyCode::Esc => {
                             self.selection = None;
                             return Ok(Noop);
                         }
@@ -536,7 +537,9 @@ impl View {
                 }
 
                 if let Some((pattern, selection)) = &self.clipboard {
-                    if let Key::Ctrl('v') = key {
+                    if key.code == KeyCode::Char('v')
+                        && key.modifiers.contains(KeyModifiers::CONTROL)
+                    {
                         let msg =
                             ctx.update_pattern(|p| p.copy(self.cursor.pos, pattern, selection));
                         self.clipboard = None;
@@ -544,50 +547,82 @@ impl View {
                     }
                 }
 
-                match key {
-                    Key::Alt('m') => return Ok(ToggleMute(self.cursor.pos.track())),
-                    Key::Alt('=') => return Ok(VolumeInc(Some(self.cursor.pos.track()))),
-                    Key::Alt('-') => return Ok(VolumeDec(Some(self.cursor.pos.track()))),
-                    Key::Ctrl('v') => {
+                match key.code {
+                    KeyCode::Char('m') if key.modifiers.contains(KeyModifiers::ALT) => {
+                        return Ok(ToggleMute(self.cursor.pos.track()))
+                    }
+                    KeyCode::Char('=') if key.modifiers.contains(KeyModifiers::ALT) => {
+                        return Ok(VolumeInc(Some(self.cursor.pos.track())))
+                    }
+                    KeyCode::Char('-') if key.modifiers.contains(KeyModifiers::ALT) => {
+                        return Ok(VolumeDec(Some(self.cursor.pos.track())))
+                    }
+                    KeyCode::Char('v') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                         let pos = self.cursor.pos;
                         self.selection = Some(Selection::new(pos, pos));
                         return Ok(Noop);
                     }
-                    Key::Char(' ') => return Ok(TogglePlay),
-                    Key::Backspace => {
+                    KeyCode::Char(' ') => return Ok(TogglePlay),
+                    KeyCode::Backspace => {
                         let msg = ctx.update_pattern(|p| p.clear(self.cursor.pos));
                         if self.cursor.pos.is_pitch_input() {
                             self.cursor.down();
                         }
                         return Ok(msg);
                     }
-                    Key::Ctrl('n') | Key::Down => self.cursor.down(),
-                    Key::Ctrl('p') | Key::Up => self.cursor.up(),
-                    Key::Ctrl('f') | Key::Right => self.cursor.right(),
-                    Key::Ctrl('b') | Key::Left => self.cursor.left(),
-                    Key::Ctrl('a') | Key::Home => self.cursor.start(),
-                    Key::Ctrl('e') | Key::End => self.cursor.end(),
-                    Key::Alt('f') => self.cursor.next_track(),
-                    Key::Alt('b') => self.cursor.prev_track(),
-                    Key::Ctrl('d') => return Ok(NextPattern),
-                    Key::Ctrl('u') => return Ok(PrevPattern),
-                    Key::Char('[') => {
+                    KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        self.cursor.down()
+                    }
+                    KeyCode::Down => self.cursor.down(),
+                    KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        self.cursor.up()
+                    }
+                    KeyCode::Up => self.cursor.up(),
+                    KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        self.cursor.right()
+                    }
+                    KeyCode::Right => self.cursor.right(),
+                    KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        self.cursor.left()
+                    }
+                    KeyCode::Left => self.cursor.left(),
+                    KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        self.cursor.start()
+                    }
+                    KeyCode::Home => self.cursor.start(),
+                    KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        self.cursor.end()
+                    }
+                    KeyCode::End => self.cursor.end(),
+                    KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::ALT) => {
+                        self.cursor.next_track()
+                    }
+                    KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::ALT) => {
+                        self.cursor.prev_track()
+                    }
+                    KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        return Ok(NextPattern)
+                    }
+                    KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        return Ok(PrevPattern)
+                    }
+                    KeyCode::Char('[') => {
                         return Ok(
                             ctx.update_pattern(|p| p.incr(self.cursor.pos, StepSize::Default))
                         )
                     }
-                    Key::Char(']') => {
+                    KeyCode::Char(']') => {
                         return Ok(
                             ctx.update_pattern(|p| p.decr(self.cursor.pos, StepSize::Default))
                         )
                     }
-                    Key::Char('{') => {
+                    KeyCode::Char('{') => {
                         return Ok(ctx.update_pattern(|p| p.incr(self.cursor.pos, StepSize::Large)))
                     }
-                    Key::Char('}') => {
+                    KeyCode::Char('}') => {
                         return Ok(ctx.update_pattern(|p| p.decr(self.cursor.pos, StepSize::Large)))
                     }
-                    Key::Char(key) => {
+                    KeyCode::Char(key) => {
                         let msg = ctx.update_pattern(|p| {
                             p.set_key(self.cursor.pos, ctx.octave() as u8, key)
                         });
@@ -603,34 +638,44 @@ impl View {
                 }
             }
             Focus::CommandLine => {}
-            Focus::Patterns => match key {
-                Key::Backspace => return Ok(DeletePattern(self.patterns.pos)),
-                Key::Ctrl('c') => return Ok(CreatePattern(Some(self.patterns.pos))),
-                Key::Ctrl('r') => return Ok(RepeatPattern(self.patterns.pos)),
-                Key::Ctrl('d') => return Ok(ClonePattern(self.patterns.pos)),
-                Key::Char('l') => return Ok(LoopToggle(self.patterns.pos)),
-                Key::Char('L') => return Ok(LoopAdd(self.patterns.pos)),
-                Key::Char('\n') => return Ok(SelectPattern(self.patterns.pos)),
+            Focus::Patterns => match key.code {
+                KeyCode::Backspace => return Ok(DeletePattern(self.patterns.pos)),
+                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    return Ok(CreatePattern(Some(self.patterns.pos)))
+                }
+                KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    return Ok(RepeatPattern(self.patterns.pos))
+                }
+                KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    return Ok(ClonePattern(self.patterns.pos))
+                }
+                KeyCode::Char('l') => return Ok(LoopToggle(self.patterns.pos)),
+                KeyCode::Char('L') => return Ok(LoopAdd(self.patterns.pos)),
+                KeyCode::Enter => return Ok(SelectPattern(self.patterns.pos)),
                 _ => self.patterns.input(key),
             },
             Focus::ProjectTree => return self.handle_project_tree_input(key, ctx),
             Focus::FileLoader => {
-                match key {
-                    Key::Ctrl('u') => self.instruments.prev(),
-                    Key::Ctrl('d') => self.instruments.next(),
-                    Key::Char('u') => {
+                match key.code {
+                    KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        self.instruments.prev()
+                    }
+                    KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        self.instruments.next()
+                    }
+                    KeyCode::Char('u') => {
                         if let Some(dir) = ctx.file_browser.dir.parent() {
                             self.files = List::default();
                             return Ok(ChangeDir(dir.to_path_buf()));
                         }
                     }
-                    Key::Char(' ') => {
+                    KeyCode::Char(' ') => {
                         let selected_path = &ctx.file_browser.entries[self.files.pos];
                         if sampler::can_load_file(selected_path) {
                             return Ok(PreviewSound(selected_path.to_path_buf()));
                         }
                     }
-                    Key::Char('\n') => {
+                    KeyCode::Enter => {
                         let selected_path = &ctx.file_browser.entries[self.files.pos];
                         let msg = if selected_path.is_dir() {
                             self.files = List::default();
@@ -651,14 +696,14 @@ impl View {
         Ok(Noop)
     }
 
-    fn handle_project_tree_input(&mut self, key: Key, ctx: ViewContext) -> Result<Msg> {
+    fn handle_project_tree_input(&mut self, key: KeyEvent, ctx: ViewContext) -> Result<Msg> {
         use Msg::*;
-        match key {
-            Key::Char('s') => {
+        match key.code {
+            KeyCode::Char('s') => {
                 self.project_tree_state = ProjectTreeState::Instruments;
                 return Ok(Noop);
             }
-            Key::Char('t') => {
+            KeyCode::Char('t') => {
                 self.project_tree_state = ProjectTreeState::Tracks;
                 return Ok(Noop);
             }
@@ -666,8 +711,8 @@ impl View {
         };
         match self.project_tree_state {
             ProjectTreeState::Tracks => {
-                match key {
-                    Key::Char('\n') => {
+                match key.code {
+                    KeyCode::Enter => {
                         self.project_tree_state = ProjectTreeState::Devices(self.tracks.pos)
                     }
                     _ => self.tracks.input(key),
@@ -676,20 +721,20 @@ impl View {
             }
             ProjectTreeState::InstrumentParams(instr_idx) => {
                 let device_id = ctx.instruments()[instr_idx].as_ref().unwrap().id;
-                match key {
-                    Key::Char('u') => {
+                match key.code {
+                    KeyCode::Char('u') => {
                         self.project_tree_state = ProjectTreeState::Instruments;
                     }
-                    Key::Char('[') => {
+                    KeyCode::Char('[') => {
                         return Ok(ParamInc(device_id, self.params.pos, StepSize::Default))
                     }
-                    Key::Char(']') => {
+                    KeyCode::Char(']') => {
                         return Ok(ParamDec(device_id, self.params.pos, StepSize::Default))
                     }
-                    Key::Char('{') => {
+                    KeyCode::Char('{') => {
                         return Ok(ParamInc(device_id, self.params.pos, StepSize::Large))
                     }
-                    Key::Char('}') => {
+                    KeyCode::Char('}') => {
                         return Ok(ParamDec(device_id, self.params.pos, StepSize::Large))
                     }
                     _ => self.params.input(key),
@@ -697,8 +742,8 @@ impl View {
                 Ok(Noop)
             }
             ProjectTreeState::Devices(_track_idx) => {
-                match key {
-                    Key::Char('u') => {
+                match key.code {
+                    KeyCode::Char('u') => {
                         self.project_tree_state = ProjectTreeState::Tracks;
                     }
                     _ => self.devices.input(key),
@@ -706,12 +751,12 @@ impl View {
                 Ok(Noop)
             }
             ProjectTreeState::Instruments => {
-                match key {
-                    Key::Char('\n') => {
+                match key.code {
+                    KeyCode::Enter => {
                         self.project_tree_state =
                             ProjectTreeState::InstrumentParams(self.instruments.pos);
                     }
-                    Key::Char('l') => self.focus = Focus::FileLoader,
+                    KeyCode::Char('l') => self.focus = Focus::FileLoader,
                     _ => self.instruments.input(key),
                 };
                 Ok(Noop)
@@ -799,10 +844,12 @@ impl List {
         self.state.select(Some(self.pos));
     }
 
-    fn input(&mut self, key: Key) {
-        match key {
-            Key::Down | Key::Ctrl('n') => self.next(),
-            Key::Up | Key::Ctrl('p') => self.prev(),
+    fn input(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Down => self.next(),
+            KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => self.next(),
+            KeyCode::Up => self.prev(),
+            KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => self.prev(),
             _ => {}
         }
     }
