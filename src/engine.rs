@@ -10,9 +10,10 @@ use triple_buffer::Input;
 
 use crate::app::{AppState, DeviceId, EngineState, TrackId};
 use crate::audio::{Buffer, Rms, Stereo};
-use crate::params::Params;
+use crate::params::{self, Param, ParamInfo, Params};
 use crate::pattern::{Note, DEFAULT_VELOCITY};
 use crate::{INTERNAL_BUFFER_SIZE, SAMPLE_RATE};
+use param_derive::Params;
 
 pub const INSTRUMENT_TRACKS: usize = 16;
 pub const PREVIEW_INSTRUMENTS_CACHE_SIZE: usize = 10;
@@ -50,7 +51,7 @@ impl Engine {
         preview_track_id: TrackId,
     ) -> Engine {
         let mut tracks = HashMap::with_capacity(TOTAL_TRACKS);
-        tracks.insert(preview_track_id, Box::new(Track::default()));
+        tracks.insert(preview_track_id, Box::new(Track::new()));
 
         // Double the capacity here. Deleting instruments is asynchronous
         // so we might have a few more in flight than the max
@@ -129,7 +130,6 @@ impl Engine {
     }
 
     pub fn process(&mut self, state: &AppState, buffer: &mut [Stereo]) {
-        self.update_state(state);
         self.run_commands(state);
         self.tick(state, buffer.len());
 
@@ -192,16 +192,11 @@ impl Engine {
             }
         }
     }
+}
 
-    fn update_state(&mut self, state: &AppState) {
-        self.master.mute.target = if state.is_playing { 1.0 } else { 0.0 };
-        for track_settings in &state.tracks {
-            if let Some(track) = self.tracks.get_mut(&track_settings.id) {
-                let track_muted = track_settings.muted || !state.is_playing;
-                track.mute.target = if track_muted { 0.0 } else { 1.0 };
-                track.volume.target = track_settings.volume.val();
-            }
-        }
+impl Default for Track {
+    fn default() -> Self {
+        Track::new()
     }
 }
 
@@ -209,28 +204,56 @@ pub struct Track {
     pub buf: Buffer,
     pub rms_out: Arc<[AtomicF64; 2]>,
     rms: Rms,
-    volume: SmoothedValue,
-    mute: SmoothedValue,
     /// Time and instrument id for the last note on event played on this track. This allows sending
     /// a note off to that device when a new event is played on this track.
     last_event: Option<(u64, DeviceId)>,
+
+    params: Arc<TrackParams>,
+}
+
+#[derive(Params)]
+pub struct TrackParams {
+    volume: Param,
+    mute: Param,
+}
+
+impl TrackParams {
+    fn new() -> Self {
+        Self {
+            volume: Param::new(
+                -6.0,
+                ParamInfo::new("Volume", -60, 3)
+                    .with_steps([0.25, 1.0])
+                    .with_smoothing(params::ExpSmoothing::default())
+                    .with_map(params::db_to_amp),
+            ),
+            mute: Param::new(
+                1.0,
+                ParamInfo::bool("Mute", 0.0).with_smoothing(params::ExpSmoothing::default()),
+            ),
+        }
+    }
 }
 
 impl Track {
-    pub fn new(volume: f64) -> Self {
+    pub fn new() -> Self {
         Self {
             rms: Rms::new(RMS_WINDOW_SIZE),
             rms_out: Arc::new([AtomicF64::new(0.0), AtomicF64::new(0.0)]),
-            volume: SmoothedValue::new(volume),
             buf: vec![Stereo::ZERO; INTERNAL_BUFFER_SIZE],
-            mute: SmoothedValue::new(1.0),
             last_event: None,
+            params: Arc::new(TrackParams::new()),
         }
+    }
+
+    pub fn params(&self) -> Arc<dyn Params> {
+        self.params.clone()
     }
 
     fn process(&mut self, buf: &mut [Stereo]) {
         for (i, out) in buf.iter_mut().enumerate() {
-            let frame = self.buf[i] * self.volume.value() as f32 * self.mute.value() as f32;
+            let frame =
+                self.buf[i] * self.params.volume.value() as f32 * self.params.mute.value() as f32;
             self.rms.add_frame(frame);
             *out += frame;
             self.buf[i] = Stereo::ZERO;
@@ -238,12 +261,6 @@ impl Track {
         let v = self.rms.value().to_db();
         self.rms_out[0].store(v.channel(0) as f64, Ordering::Relaxed);
         self.rms_out[1].store(v.channel(1) as f64, Ordering::Relaxed);
-    }
-}
-
-impl Default for Track {
-    fn default() -> Self {
-        Self::new(1.0)
     }
 }
 
@@ -330,24 +347,5 @@ impl<'a> ProcessContext<'a> {
     pub fn track_buffer(&mut self, track_id: TrackId, range: &Range<usize>) -> &mut [Stereo] {
         let track = self.tracks.get_mut(&track_id).unwrap();
         &mut track.buf[range.clone()]
-    }
-}
-
-pub struct SmoothedValue {
-    current: f64,
-    target: f64,
-}
-
-impl SmoothedValue {
-    fn new(value: f64) -> Self {
-        Self {
-            current: value,
-            target: value,
-        }
-    }
-
-    fn value(&mut self) -> f64 {
-        self.current = 0.01 * self.target + 0.99 * self.current;
-        self.current
     }
 }

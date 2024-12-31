@@ -1,6 +1,6 @@
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{parse_macro_input, Data, DataStruct, DeriveInput, Fields};
+use syn::{parse_macro_input, Data, DataStruct, DeriveInput, Fields, Ident};
 
 #[proc_macro_derive(Params)]
 pub fn derive_params(input: TokenStream) -> TokenStream {
@@ -23,6 +23,7 @@ pub fn derive_params(input: TokenStream) -> TokenStream {
 
     let mut num_params: usize = 0;
     let mut match_arms = Vec::new();
+    let mut constants = Vec::new();
 
     // TODO: only select fields marked by an attribute?
     for (index, field) in fields.named.iter().enumerate() {
@@ -31,13 +32,24 @@ pub fn derive_params(input: TokenStream) -> TokenStream {
             match_arms.push(quote! {
                 #index => &self.#ident
             });
+
+            let const_name = Ident::new(&ident.to_string().to_uppercase(), ident.span());
+            constants.push(quote! {
+                pub const #const_name: usize = #index;
+            });
         }
     }
     match_arms.push(quote! {
         _ => unreachable!(),
     });
 
-    quote! {
+    let constant_impl = quote! {
+        impl #struct_name {
+            #(#constants)*
+        }
+    };
+
+    let params_impl = quote! {
         impl Params for #struct_name {
             fn len(&self) -> usize {
                 #num_params
@@ -49,6 +61,10 @@ pub fn derive_params(input: TokenStream) -> TokenStream {
                 }
             }
         }
-    }
-    .into()
+    };
+
+    TokenStream::from(quote! {
+        #constant_impl
+        #params_impl
+    })
 }

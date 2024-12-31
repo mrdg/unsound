@@ -99,8 +99,7 @@ impl<'a> Editor<'a> {
             height: 2,
         };
 
-        let volume = format!("{:.2}", track.volume());
-        let volume = Paragraph::new(volume)
+        let volume = Paragraph::new(track.volume.as_str())
             .alignment(Alignment::Center)
             .block(
                 Block::default()
@@ -124,20 +123,18 @@ impl<'a> Editor<'a> {
             return;
         }
 
-        let button_style = if track.is_muted() {
+        let button_style = if track.muted {
             Style::default().bg(Color::DarkGray)
         } else {
             Style::default().bg(Color::Yellow).fg(Color::Black)
         };
 
         let button = Span::styled(format!(" {} ", track.index), button_style);
-        let button = Paragraph::new(button)
-            .alignment(Alignment::Center)
-            .block(
-                Block::default()
-                    .borders(Borders::TOP)
-                    .border_style(Style::default().fg(BORDER_COLOR)),
-            );
+        let button = Paragraph::new(button).alignment(Alignment::Center).block(
+            Block::default()
+                .borders(Borders::TOP)
+                .border_style(Style::default().fg(BORDER_COLOR)),
+        );
         button.render(button_area, buf);
     }
 
@@ -181,7 +178,7 @@ impl<'a> Editor<'a> {
 
             let fx_cmd1 = step
                 .effect_cmd(0)
-                .map(|c| (c as u8 as char).to_string())
+                .map(|c| (c as char).to_string())
                 .unwrap_or_else(|| "-".into());
             let fx_val1 = step
                 .effect_val(0)
@@ -189,7 +186,7 @@ impl<'a> Editor<'a> {
                 .unwrap_or_else(|| "---".into());
             let fx_cmd2 = step
                 .effect_cmd(1)
-                .map(|c| (c as u8 as char).to_string())
+                .map(|c| (c as char).to_string())
                 .unwrap_or_else(|| "-".into());
             let fx_val2 = step
                 .effect_val(1)
@@ -255,7 +252,7 @@ impl<'a> Editor<'a> {
     }
 }
 
-impl<'a> StatefulWidget for &Editor<'a> {
+impl StatefulWidget for &Editor<'_> {
     type State = EditorState;
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
@@ -318,7 +315,7 @@ impl<'a> StatefulWidget for &Editor<'a> {
             );
         }
 
-        let mut x = area.x + STEPS_WIDTH as u16;
+        let mut x = area.x + STEPS_WIDTH;
         let mut render_track = |x: u16, width: u16, track: &TrackView| {
             let mut borders = Borders::RIGHT | Borders::BOTTOM | Borders::LEFT;
 

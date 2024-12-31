@@ -106,5 +106,5 @@ impl Envelope {
 }
 
 fn ratio_to_pole(msec: f64, ratio: f64) -> f64 {
-    f64::powf(ratio, 1.0 / ((msec / 1000.0) * SAMPLE_RATE as f64))
+    f64::powf(ratio, 1.0 / ((msec / 1000.0) * SAMPLE_RATE))
 }

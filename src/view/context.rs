@@ -1,7 +1,7 @@
 use crate::app::{
     AppState, Device, DeviceId, EngineState, Instrument, Msg, PatternId, Track, TrackType,
 };
-use crate::engine::TICKS_PER_LINE;
+use crate::engine::{TrackParams, TICKS_PER_LINE};
 use crate::files::FileBrowser;
 use crate::params::Params;
 use crate::pattern::{Pattern, Step};
@@ -57,6 +57,10 @@ impl<'a> ViewContext<'a> {
         &self.app().tracks
     }
 
+    pub fn track(&self, idx: usize) -> &Track {
+        &self.app().tracks[idx]
+    }
+
     pub fn params(&self, track_idx: usize) -> &Arc<dyn Params> {
         let device = &self.app_state.instruments[track_idx].as_ref().unwrap().id;
         self.device_params.get(device).unwrap()
@@ -89,17 +93,31 @@ impl<'a> ViewContext<'a> {
 
     pub fn master_bus(&self) -> TrackView {
         let track = self.tracks().last().unwrap();
+        let params = self.device_params.get(&track.device_id).unwrap();
+        let volume = params.get_param(TrackParams::VOLUME).as_string();
+        let muted = params.get_param(TrackParams::MUTE).as_bool();
+
         TrackView {
             track,
             index: self.app_state.tracks.len() - 1,
+            volume,
+            muted,
         }
     }
 
     pub fn iter_tracks(&self) -> impl Iterator<Item = TrackView> {
-        self.tracks()
-            .iter()
-            .enumerate()
-            .map(|(i, track)| TrackView { track, index: i })
+        self.tracks().iter().enumerate().map(|(i, track)| {
+            let params = self.device_params.get(&track.device_id).unwrap();
+            let volume = params.get_param(TrackParams::VOLUME).as_string();
+            let muted = params.get_param(TrackParams::MUTE).as_bool();
+
+            TrackView {
+                track,
+                index: i,
+                volume,
+                muted,
+            }
+        })
     }
 
     pub fn pattern_steps(&self, track_idx: usize, range: &Range<usize>) -> &[Step] {
@@ -143,6 +161,8 @@ impl<'a> ViewContext<'a> {
 
 pub struct TrackView<'a> {
     track: &'a Track,
+    pub volume: String,
+    pub muted: bool,
     pub index: usize,
 }
 
@@ -156,14 +176,6 @@ impl TrackView<'_> {
 
     pub fn rms(&self) -> (f32, f32) {
         self.track.rms()
-    }
-
-    pub fn is_muted(&self) -> bool {
-        self.track.muted
-    }
-
-    pub fn volume(&self) -> f64 {
-        self.track.volume.db()
     }
 
     pub fn is_bus(&self) -> bool {

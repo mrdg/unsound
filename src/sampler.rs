@@ -216,7 +216,8 @@ impl Sampler {
             voice.state = VoiceState::Busy(track_id);
             voice.env = Envelope::new(self.params.adsr());
             voice.pitch = pitch;
-            voice.velocity = gain_factor(map(velocity.into(), (0.0, 127.0), (-60.0, 0.0)));
+            voice.velocity =
+                params::db_to_amp(map(velocity.into(), (0.0, 127.0), (-60.0, 0.0))) as f32;
 
             let pitch = pitch as i8 - ROOT_PITCH as i8;
             voice.pitch_ratio = f32::powf(2., pitch as f32 / 12.0)
@@ -288,11 +289,7 @@ impl Plugin for Sampler {
     }
 }
 
-fn gain_factor(db: f32) -> f32 {
-    f32::powf(10.0, db / 20.0)
-}
-
-fn map(v: f32, from: (f32, f32), to: (f32, f32)) -> f32 {
+fn map(v: f64, from: (f64, f64), to: (f64, f64)) -> f64 {
     (v - from.0) * (to.1 - to.0) / (from.1 - from.0) + to.0
 }
 

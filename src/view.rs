@@ -4,6 +4,7 @@ pub mod editor;
 use std::time::Duration;
 
 use crate::app::Msg;
+use crate::engine::TrackParams;
 pub use crate::input::{Input, InputQueue};
 use crate::params::ParamIterExt;
 use crate::pattern;
@@ -315,7 +316,7 @@ impl View {
                             " {:0nwidth$} {:lwidth$} {}",
                             i,
                             p.label(),
-                            p.value_as_string(),
+                            p.as_string(),
                             nwidth = 2,
                             lwidth = w
                         )))
@@ -477,17 +478,6 @@ impl View {
                         "bpm" => Ok(SetBpm(parts[1].parse()?)),
                         "quit" | "q" | "exit" => Ok(Exit),
                         "setlength" if parts.len() == 2 => Ok(SetPatternLen(parts[1].parse()?)),
-                        "volume" => {
-                            let cmd = if parts.len() == 3 {
-                                let track: usize = parts[1].parse()?;
-                                let value: f64 = parts[2].parse()?;
-                                SetVolume(Some(track), value)
-                            } else {
-                                let value: f64 = parts[1].parse()?;
-                                SetVolume(None, value)
-                            };
-                            Ok(cmd)
-                        }
                         "cd" => {
                             if parts.len() > 1 {
                                 Ok(ChangeDir(Utf8PathBuf::from(parts[1])))
@@ -549,13 +539,24 @@ impl View {
 
                 match key.code {
                     KeyCode::Char('m') if key.modifiers.contains(KeyModifiers::ALT) => {
-                        return Ok(ToggleMute(self.cursor.pos.track()))
+                        let track = ctx.track(self.cursor.pos.track());
+                        return Ok(ParamToggle(track.device_id, TrackParams::MUTE));
                     }
                     KeyCode::Char('=') if key.modifiers.contains(KeyModifiers::ALT) => {
-                        return Ok(VolumeInc(Some(self.cursor.pos.track())))
+                        let track = ctx.track(self.cursor.pos.track());
+                        return Ok(ParamInc(
+                            track.device_id,
+                            TrackParams::VOLUME,
+                            StepSize::Large,
+                        ));
                     }
                     KeyCode::Char('-') if key.modifiers.contains(KeyModifiers::ALT) => {
-                        return Ok(VolumeDec(Some(self.cursor.pos.track())))
+                        let track = ctx.track(self.cursor.pos.track());
+                        return Ok(ParamDec(
+                            track.device_id,
+                            TrackParams::VOLUME,
+                            StepSize::Large,
+                        ));
                     }
                     KeyCode::Char('v') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                         let pos = self.cursor.pos;

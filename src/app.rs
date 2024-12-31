@@ -189,18 +189,13 @@ impl App {
             }
             SetPatternLen(len) => self.update_pattern(|p| p.set_len(len)),
             ChangeDir(dir) => self.file_browser.move_to(dir)?,
-            ToggleMute(track) => {
-                let muted = &mut self.state.tracks[track].muted;
-                *muted = !*muted;
-            }
-            VolumeInc(track) => self.track_volume(track).inc(),
-            VolumeDec(track) => self.track_volume(track).dec(),
-            SetVolume(track, value) => self.track_volume(track).set(value),
             CreateTrack(idx) => {
-                let volume = Volume::new(-6.0);
-                let track = engine::Track::new(volume.val());
+                let track = engine::Track::new();
                 let rms = track.rms_out.clone();
-                let track_info = Track::new(volume, rms);
+                let track_info = Track::new(rms);
+                self.device_params
+                    .insert(track_info.device_id, track.params());
+
                 let cmd = EngineCommand::CreateTrack(track_info.id, Box::new(track));
                 self.send_to_engine(cmd)?;
                 self.state.tracks.insert(idx, track_info);
@@ -213,17 +208,13 @@ impl App {
                 let params = self.device_params.get(&device_id).unwrap();
                 params.get_param(param_idx).decr(step_size);
             }
+            ParamToggle(device_id, param_idx) => {
+                let params = self.device_params.get(&device_id).unwrap();
+                params.get_param(param_idx).toggle();
+            }
         }
 
         Ok(())
-    }
-
-    fn track_volume(&mut self, track: Option<usize>) -> &mut Volume {
-        if let Some(track) = track {
-            &mut self.state.tracks[track].volume
-        } else {
-            &mut self.state.tracks.last_mut().unwrap().volume
-        }
     }
 
     fn next_pattern_id(&self) -> PatternId {
@@ -311,23 +302,21 @@ impl AppState {
 #[derive(Clone)]
 pub struct Track {
     pub id: TrackId,
+    pub device_id: DeviceId,
     pub effects: Vec<Device>,
     pub track_type: TrackType,
     pub name: Option<String>,
-    pub volume: Volume,
-    pub muted: bool,
     pub rms: Arc<[AtomicF64; 2]>,
 }
 
 impl Track {
-    fn new(volume: Volume, rms: Arc<[AtomicF64; 2]>) -> Self {
+    fn new(rms: Arc<[AtomicF64; 2]>) -> Self {
         Self {
             id: TrackId::new(),
-            volume,
+            device_id: DeviceId::new(),
             effects: vec![],
             track_type: TrackType::Instrument,
             name: None,
-            muted: false,
             rms,
         }
     }
@@ -378,11 +367,14 @@ pub fn new() -> Result<(App, Output<AppState>, Engine, Output<EngineState>)> {
     let (app_state_input, app_state_output) = TripleBuffer::new(&app_state).split();
     let (engine_state_input, engine_state_output) = TripleBuffer::new(&engine_state).split();
 
+    let mut device_params = HashMap::new();
+
     // Create master track
-    let volume = Volume::new(-6.0);
-    let master = engine::Track::new(volume.val());
+    let master = engine::Track::new();
     let rms = master.rms_out.clone();
-    let mut track = Track::new(volume, rms);
+    let mut track = Track::new(rms);
+    device_params.insert(track.device_id, master.params());
+
     track.name = Some(String::from("Master"));
     track.track_type = TrackType::Bus;
     app_state.tracks.push(track);
@@ -404,7 +396,7 @@ pub fn new() -> Result<(App, Output<AppState>, Engine, Output<EngineState>)> {
         state_buf: app_state_input,
         producer,
         file_browser: FileBrowser::with_path("./sounds")?,
-        device_params: HashMap::new(),
+        device_params,
         preview_track_id,
         preview_cache,
         collector: basedrop::Collector::new(),
@@ -432,13 +424,10 @@ pub enum Msg {
     ChangeDir(Utf8PathBuf),
     SetBpm(u16),
     SetOct(u16),
-    ToggleMute(usize),
-    VolumeInc(Option<usize>),
-    VolumeDec(Option<usize>),
-    SetVolume(Option<usize>, f64),
     CreateTrack(usize),
     ParamInc(DeviceId, usize, StepSize),
     ParamDec(DeviceId, usize, StepSize),
+    ParamToggle(DeviceId, usize),
 }
 
 impl Msg {
@@ -453,47 +442,6 @@ pub struct PatternId(u64);
 impl Display for PatternId {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0)
-    }
-}
-
-#[derive(Clone)]
-pub struct Volume {
-    value: f64,
-    value_db: f64,
-}
-
-impl Volume {
-    fn new(db: f64) -> Self {
-        let mut v = Self {
-            value_db: 0.0,
-            value: 0.0,
-        };
-        v.set(db);
-        v
-    }
-
-    pub fn db(&self) -> f64 {
-        self.value_db
-    }
-
-    pub fn val(&self) -> f64 {
-        self.value
-    }
-
-    fn inc(&mut self) {
-        self.set(self.value_db + 0.25);
-    }
-
-    fn dec(&mut self) {
-        self.set(self.value_db - 0.25);
-    }
-
-    fn set(&mut self, db: f64) {
-        let db = f64::min(db, 3.0);
-        let db = f64::max(db, -60.0);
-        self.value_db = db;
-        let new = f64::powf(10.0, db / 20.0);
-        self.value = new;
     }
 }
 
