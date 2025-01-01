@@ -24,7 +24,7 @@ use engine::{Engine, INSTRUMENT_TRACKS};
 use ratatui::crossterm::event::{Event, KeyEventKind};
 use ratatui::DefaultTerminal;
 use triple_buffer::Output;
-use view::{InputQueue, ViewContext};
+use view::InputQueue;
 
 use crate::app::{App, AppState};
 use crate::view::View;
@@ -121,25 +121,20 @@ fn run_audio(mut app_state: Output<AppState>, mut engine: Engine) -> Result<cpal
 
 fn run_app(
     mut app: App,
-    mut engine_state: Output<EngineState>,
+    mut engine_state_handle: Output<EngineState>,
     mut terminal: DefaultTerminal,
 ) -> Result<()> {
     let mut input = InputQueue::new();
 
     let mut view = View::new();
     loop {
-        let ctx = ViewContext::new(
-            &app.device_params,
-            &app.state,
-            engine_state.read(),
-            &app.file_browser,
-        );
-        terminal.draw(|f| view.render(f, ctx))?;
+        let engine_state = engine_state_handle.read();
+        terminal.draw(|f| view.render(f, &app, engine_state))?;
 
         match input.next()? {
             view::Input::Event(event) => match event {
                 Event::Key(event) if event.kind == KeyEventKind::Press => {
-                    let msg = view.handle_input(event, ctx);
+                    let msg = view.handle_input(event, &app);
                     if msg.is_exit() {
                         return Ok(());
                     }

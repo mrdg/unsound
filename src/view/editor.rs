@@ -1,7 +1,8 @@
 use std::ops::Range;
 
+use crate::app::{App, EngineState, Track};
+use crate::engine::TrackParams;
 use crate::pattern::{Position, Selection, INPUTS_PER_STEP, MAX_PITCH};
-use crate::view::context::{TrackView, ViewContext};
 use crate::view::Focus;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout};
 use ratatui::widgets::Paragraph;
@@ -22,7 +23,8 @@ pub struct EditorState {
 }
 
 pub struct Editor<'a> {
-    ctx: ViewContext<'a>,
+    app: &'a App,
+    engine_state: &'a EngineState,
     cursor: Position,
     focus: Focus,
     selection: &'a Option<Selection>,
@@ -33,17 +35,19 @@ impl<'a> Editor<'a> {
         cursor: Position,
         focus: Focus,
         selection: &'a Option<Selection>,
-        ctx: ViewContext<'a>,
+        app: &'a App,
+        engine_state: &'a EngineState,
     ) -> Self {
         Self {
-            ctx,
+            app,
+            engine_state,
             cursor,
             focus,
             selection,
         }
     }
 
-    fn render_mixer_controls(&self, track: &TrackView, area: Rect, buf: &mut Buffer) {
+    fn render_mixer_controls(&self, track: &Track, idx: usize, area: Rect, buf: &mut Buffer) {
         let mut meter_width = 2;
         if area.width % 2 != 0 {
             meter_width += 1;
@@ -99,7 +103,14 @@ impl<'a> Editor<'a> {
             height: 2,
         };
 
-        let volume = Paragraph::new(track.volume.as_str())
+        let volume = self
+            .app
+            .device_params
+            .get(&track.device_id)
+            .unwrap()
+            .get_param(TrackParams::VOLUME);
+
+        let volume = Paragraph::new(volume.as_string())
             .alignment(Alignment::Center)
             .block(
                 Block::default()
@@ -123,13 +134,20 @@ impl<'a> Editor<'a> {
             return;
         }
 
-        let button_style = if track.muted {
+        let muted = self
+            .app
+            .device_params
+            .get(&track.device_id)
+            .unwrap()
+            .get_param(TrackParams::MUTE);
+
+        let button_style = if muted.as_bool() {
             Style::default().bg(Color::DarkGray)
         } else {
             Style::default().bg(Color::Yellow).fg(Color::Black)
         };
 
-        let button = Span::styled(format!(" {} ", track.index), button_style);
+        let button = Span::styled(format!(" {} ", idx), button_style);
         let button = Paragraph::new(button).alignment(Alignment::Center).block(
             Block::default()
                 .borders(Borders::TOP)
@@ -138,8 +156,12 @@ impl<'a> Editor<'a> {
         button.render(button_area, buf);
     }
 
-    fn render_track_header(&self, area: Rect, buf: &mut Buffer, track: &TrackView) {
-        let track_name = format!(" {}", track.name());
+    fn render_track_header(&self, area: Rect, buf: &mut Buffer, track: &Track, idx: usize) {
+        let track_name = if let Some(name) = &track.name {
+            format!(" {}", name)
+        } else {
+            format!(" {}", idx)
+        };
         let bg_color = Color::Indexed(250);
         let header = Paragraph::new(track_name)
             .alignment(Alignment::Left)
@@ -153,18 +175,19 @@ impl<'a> Editor<'a> {
         &self,
         area: Rect,
         buf: &mut Buffer,
-        track: &TrackView,
+        idx: usize,
         step_range: &Range<usize>,
     ) {
         let mut y = area.top() + 1;
         for (line, step) in self
-            .ctx
-            .pattern_steps(track.index, step_range)
+            .app
+            .state
+            .pattern_steps(idx, step_range)
             .iter()
             .enumerate()
         {
             let line = line + step_range.start;
-            let column = track.index * INPUTS_PER_STEP;
+            let column = idx * INPUTS_PER_STEP;
 
             let pitch = match step.pitch() {
                 Some(pitch) => &NOTE_NAMES[pitch as usize],
@@ -193,7 +216,7 @@ impl<'a> Editor<'a> {
                 .map(|c| format!("{:3}", c))
                 .unwrap_or_else(|| "---".into());
 
-            let line_style = if line % self.ctx.lines_per_beat() as usize == 0 {
+            let line_style = if line % self.app.state.lines_per_beat as usize == 0 {
                 Style::default().bg(Color::Indexed(236))
             } else {
                 Style::default()
@@ -215,7 +238,7 @@ impl<'a> Editor<'a> {
                 } else if self.is_current_line(line)
                     && offset == 0
                     && step.pitch().is_some()
-                    && self.ctx.is_playing()
+                    && self.app.state.is_playing
                 {
                     // Pitch input is highlighted when it's the currently active note
                     Style::default().bg(Color::Indexed(239)).fg(Color::White)
@@ -244,10 +267,10 @@ impl<'a> Editor<'a> {
     }
 
     fn is_current_line(&self, line: usize) -> bool {
-        if self.ctx.selected_pattern_index() != self.ctx.active_pattern_index() {
+        if self.app.state.selected_pattern != self.engine_state.current_pattern {
             false
         } else {
-            self.ctx.current_line() == line
+            self.engine_state.current_line() == line
         }
     }
 }
@@ -266,7 +289,7 @@ impl StatefulWidget for &Editor<'_> {
 
         let header_height = 1;
         let height = pattern_area.height as usize - header_height - 1;
-        let pattern = self.ctx.selected_pattern();
+        let pattern = self.app.state.selected_pattern();
         let mut last_line = state.line_offset + std::cmp::min(height, pattern.len());
 
         if last_line > pattern.len() {
@@ -302,7 +325,7 @@ impl StatefulWidget for &Editor<'_> {
         for (i, step) in steps.clone().enumerate() {
             let style = if self.is_current_line(step) {
                 Style::default().bg(Color::Blue).fg(Color::White)
-            } else if step % self.ctx.lines_per_beat() as usize == 0 {
+            } else if step % self.app.state.lines_per_beat as usize == 0 {
                 Style::default().bg(Color::Indexed(236))
             } else {
                 Style::default()
@@ -316,7 +339,7 @@ impl StatefulWidget for &Editor<'_> {
         }
 
         let mut x = area.x + STEPS_WIDTH;
-        let mut render_track = |x: u16, width: u16, track: &TrackView| {
+        let mut render_track = |x: u16, width: u16, track: &Track, idx: usize| {
             let mut borders = Borders::RIGHT | Borders::BOTTOM | Borders::LEFT;
 
             // Draw pattern
@@ -331,9 +354,9 @@ impl StatefulWidget for &Editor<'_> {
                 .border_style(Style::default().fg(BORDER_COLOR));
             let inner = block.inner(area);
             block.render(area, buf);
-            self.render_track_header(inner, buf, track);
+            self.render_track_header(inner, buf, track, idx);
             if !track.is_bus() {
-                self.render_track_steps(inner, buf, track, &steps);
+                self.render_track_steps(inner, buf, idx, &steps);
             }
 
             // Draw mixer channel
@@ -349,22 +372,28 @@ impl StatefulWidget for &Editor<'_> {
                 .border_style(Style::default().fg(BORDER_COLOR));
             let inner = block.inner(area);
             block.render(area, buf);
-            self.render_mixer_controls(track, inner, buf);
+            self.render_mixer_controls(track, idx, inner, buf);
         };
 
-        for track in self.ctx.iter_tracks().filter(|t| {
-            !t.is_bus()
-                && t.index >= state.track_offset
-                && t.index < state.track_offset + num_tracks
-        }) {
-            render_track(x, TRACK_WIDTH, &track);
-            x += TRACK_WIDTH;
+        for (idx, track) in self.app.state.tracks.iter().enumerate() {
+            if track.is_bus() {
+                continue;
+            }
+            if idx >= state.track_offset && idx < state.track_offset + num_tracks {
+                render_track(x, TRACK_WIDTH, track, idx);
+                x += TRACK_WIDTH;
+            }
         }
 
         // Master track sticks to the right of the editor area
-        let master_track = self.ctx.master_bus();
-        let x = area.x + (area.width - BUS_TRACK_WIDTH);
-        render_track(x, BUS_TRACK_WIDTH, &master_track);
+        let master_track = self.app.state.tracks.last().unwrap();
+        let master_idx = self.app.state.tracks.len() - 1;
+        render_track(
+            area.x + (area.width - BUS_TRACK_WIDTH),
+            BUS_TRACK_WIDTH,
+            master_track,
+            master_idx,
+        );
     }
 }
 

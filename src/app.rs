@@ -10,7 +10,7 @@ use ulid::Ulid;
 use crate::engine::{self, Engine, Plugin, INSTRUMENT_TRACKS, PREVIEW_INSTRUMENTS_CACHE_SIZE};
 use crate::files::FileBrowser;
 use crate::params::Params;
-use crate::pattern::{StepSize, MAX_PATTERNS};
+use crate::pattern::{Step, StepSize, MAX_PATTERNS};
 use crate::sampler::{self, Sampler, ROOT_PITCH};
 use crate::{engine::EngineCommand, pattern::Pattern};
 use std::collections::HashMap;
@@ -19,6 +19,7 @@ use std::sync::Arc;
 use std::fmt;
 use std::fmt::Display;
 use std::fmt::Formatter;
+use std::ops::Range;
 use std::sync::atomic::Ordering;
 
 pub struct App {
@@ -187,7 +188,6 @@ impl App {
                 self.state.patterns.insert(new_id, Arc::new(p2));
                 self.state.song.insert(idx + 1, new_id);
             }
-            SetPatternLen(len) => self.update_pattern(|p| p.set_len(len)),
             ChangeDir(dir) => self.file_browser.move_to(dir)?,
             CreateTrack(idx) => {
                 let track = engine::Track::new();
@@ -217,6 +217,22 @@ impl App {
         Ok(())
     }
 
+    pub fn params(&self, track_idx: usize) -> &Arc<dyn Params> {
+        let device = &self.state.instruments[track_idx].as_ref().unwrap().id;
+        self.device_params.get(device).unwrap()
+    }
+
+    pub fn update_pattern<F>(&self, f: F) -> Msg
+    where
+        F: Fn(&mut Pattern),
+    {
+        let mut pattern = self.state.selected_pattern().clone();
+        f(&mut pattern);
+
+        let pattern_id = self.state.song[self.state.selected_pattern];
+        Msg::UpdatePattern(pattern_id, pattern)
+    }
+
     fn next_pattern_id(&self) -> PatternId {
         if self.state.patterns.is_empty() {
             return PatternId(0);
@@ -228,18 +244,6 @@ impl App {
             }
         }
         PatternId(max + 1)
-    }
-
-    fn update_pattern<F>(&mut self, f: F)
-    where
-        F: Fn(&mut Pattern),
-    {
-        let id = self.state.song[self.state.selected_pattern];
-        if let Some(pattern) = self.state.patterns.get(&id) {
-            let mut new = (**pattern).clone();
-            f(&mut new);
-            self.state.patterns.insert(id, Arc::new(new));
-        }
     }
 
     fn send_to_engine(&mut self, cmd: EngineCommand) -> Result<()> {
@@ -254,6 +258,12 @@ impl App {
 pub struct EngineState {
     pub current_tick: usize,
     pub current_pattern: usize,
+}
+
+impl EngineState {
+    pub fn current_line(&self) -> usize {
+        self.current_tick / crate::engine::TICKS_PER_LINE
+    }
 }
 
 #[derive(Clone)]
@@ -293,9 +303,31 @@ impl AppState {
         next
     }
 
-    pub fn master_bus(&self) -> &Track {
-        // the master track always exists so it's ok to unwrap here
-        self.tracks.last().unwrap()
+    pub fn selected_pattern(&self) -> &Pattern {
+        let id = self.song[self.selected_pattern];
+        self.patterns.get(&id).unwrap()
+    }
+
+    pub fn devices(&self, track_idx: usize) -> &Vec<Device> {
+        &self.tracks[track_idx].effects
+    }
+
+    pub fn loop_contains(&self, idx: usize) -> bool {
+        if let Some(loop_range) = self.loop_range {
+            loop_range.0 <= idx && idx <= loop_range.1
+        } else {
+            false
+        }
+    }
+
+    pub fn song_iter(&self) -> impl Iterator<Item = &Arc<Pattern>> {
+        self.song.iter().map(|id| self.patterns.get(id).unwrap())
+    }
+
+    pub fn pattern_steps(&self, track_idx: usize, range: &Range<usize>) -> &[Step] {
+        let pattern = self.selected_pattern();
+        let steps = pattern.steps(track_idx);
+        &steps[range.start..range.end]
     }
 }
 
@@ -319,6 +351,10 @@ impl Track {
             name: None,
             rms,
         }
+    }
+
+    pub fn is_bus(&self) -> bool {
+        matches!(self.track_type, TrackType::Bus)
     }
 
     pub fn rms(&self) -> (f32, f32) {
@@ -419,7 +455,6 @@ pub enum Msg {
     CreatePattern(Option<usize>),
     RepeatPattern(usize),
     ClonePattern(usize),
-    SetPatternLen(usize),
     UpdatePattern(PatternId, Pattern),
     ChangeDir(Utf8PathBuf),
     SetBpm(u16),

@@ -1,9 +1,8 @@
-pub mod context;
 pub mod editor;
 
 use std::time::Duration;
 
-use crate::app::Msg;
+use crate::app::{App, EngineState, Msg};
 use crate::engine::TrackParams;
 pub use crate::input::{Input, InputQueue};
 use crate::params::ParamIterExt;
@@ -14,7 +13,6 @@ use crate::pattern::Selection;
 use crate::pattern::StepSize;
 use crate::pattern::INPUTS_PER_STEP;
 use crate::sampler;
-pub use crate::view::context::ViewContext;
 pub use crate::view::editor::{Editor, EditorState};
 use anyhow::{anyhow, Result};
 use camino::Utf8PathBuf;
@@ -70,8 +68,8 @@ impl View {
 }
 
 impl View {
-    pub fn render(&mut self, f: &mut Frame, ctx: ViewContext) {
-        self.set_state(ctx);
+    pub fn render(&mut self, f: &mut Frame, app: &App, engine_state: &EngineState) {
+        self.set_state(app);
         self.frames += 1;
 
         let screen = f.area();
@@ -92,18 +90,18 @@ impl View {
         let status = sections[1];
         let command = sections[2];
 
-        self.render_main(f, ctx, main);
-        self.render_command_line(f, ctx, command);
+        self.render_main(f, app, engine_state, main);
+        self.render_command_line(f, command);
 
         let block = Block::default()
             .borders(Borders::TOP | Borders::BOTTOM)
             .border_style(Style::default().fg(BORDER_COLOR));
         let area = block.inner(status);
         f.render_widget(block, status);
-        self.render_status_line(f, ctx, area);
+        self.render_status_line(f, app, engine_state, area);
     }
 
-    fn render_command_line(&mut self, f: &mut Frame, _ctx: ViewContext, area: Rect) {
+    fn render_command_line(&mut self, f: &mut Frame, area: Rect) {
         if !self.command.is_empty() {
             let spans = Line::from(vec![Span::raw(":"), Span::raw(&*self.command)]);
             let p = Paragraph::new(spans);
@@ -111,13 +109,19 @@ impl View {
         }
     }
 
-    fn render_status_line(&mut self, f: &mut Frame, ctx: ViewContext, area: Rect) {
+    fn render_status_line(
+        &mut self,
+        f: &mut Frame,
+        app: &App,
+        engine_state: &EngineState,
+        area: Rect,
+    ) {
         let style = Style::default();
 
         let p = Paragraph::new(format!(
             " [ {:0width$} . {:0width$} ] ",
-            ctx.active_pattern_index(),
-            ctx.current_line(),
+            engine_state.current_pattern,
+            engine_state.current_line(),
             width = 3
         ))
         .alignment(Alignment::Left)
@@ -131,15 +135,13 @@ impl View {
 
         let s = format!(
             "BPM {}    LPB {}    Oct {}  ",
-            ctx.bpm(),
-            ctx.lines_per_beat(),
-            ctx.octave()
+            app.state.bpm, app.state.lines_per_beat, app.state.octave,
         );
         let p = Paragraph::new(s).alignment(Alignment::Right).style(style);
         f.render_widget(p, area);
     }
 
-    fn render_main(&mut self, f: &mut Frame, ctx: ViewContext, area: Rect) {
+    fn render_main(&mut self, f: &mut Frame, app: &App, engine_state: &EngineState, area: Rect) {
         let sections = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(80), Constraint::Percentage(20)].as_ref())
@@ -149,11 +151,11 @@ impl View {
         let editor = sections[0];
         let sidebar = sections[1];
 
-        self.render_editor(f, ctx, editor);
-        self.render_sidebar(f, ctx, sidebar);
+        self.render_editor(f, app, engine_state, editor);
+        self.render_sidebar(f, app, sidebar);
     }
 
-    fn render_editor(&mut self, f: &mut Frame, ctx: ViewContext, area: Rect) {
+    fn render_editor(&mut self, f: &mut Frame, app: &App, engine_state: &EngineState, area: Rect) {
         let sections = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
@@ -168,7 +170,7 @@ impl View {
             .border_style(Style::default().fg(BORDER_COLOR));
         let area = block.inner(sections[0]);
         f.render_widget(block, sections[0]);
-        self.render_patterns(f, ctx, area);
+        self.render_patterns(f, app, engine_state, area);
 
         // Editor
         let block = Block::default()
@@ -177,11 +179,23 @@ impl View {
         let area = block.inner(sections[1]);
         f.render_widget(block, sections[1]);
 
-        let editor = Editor::new(self.cursor.pos, self.focus, &self.selection, ctx);
+        let editor = Editor::new(
+            self.cursor.pos,
+            self.focus,
+            &self.selection,
+            app,
+            engine_state,
+        );
         f.render_stateful_widget(&editor, area, &mut self.editor);
     }
 
-    fn render_patterns(&mut self, f: &mut Frame, ctx: ViewContext, area: Rect) {
+    fn render_patterns(
+        &mut self,
+        f: &mut Frame,
+        app: &App,
+        engine_state: &EngineState,
+        area: Rect,
+    ) {
         let right = area.width / 2 + 2;
         let left = area.width - right;
 
@@ -190,10 +204,11 @@ impl View {
             .constraints([Constraint::Length(left), Constraint::Length(right)])
             .split(area);
 
-        let active_idx = ctx.active_pattern_index();
-        let selected_idx = ctx.selected_pattern_index();
-        let patterns: Vec<ListItem> = ctx
-            .song()
+        let active_idx = engine_state.current_pattern;
+        let selected_idx = app.state.selected_pattern;
+        let patterns: Vec<ListItem> = app
+            .state
+            .song
             .iter()
             .enumerate()
             .map(|(i, _)| {
@@ -213,17 +228,18 @@ impl View {
         let patterns = ListView::new(patterns).highlight_style(highlight_style);
         f.render_stateful_widget(patterns, sections[0], &mut self.patterns.state);
 
-        let patterns: Vec<ListItem> = ctx
+        let patterns: Vec<ListItem> = app
+            .state
             .song_iter()
             .enumerate()
             .map(|(i, pattern)| {
-                let looped = if ctx.loop_contains(i) { "~" } else { " " };
+                let looped = if app.state.loop_contains(i) { "~" } else { " " };
                 let play_indicator = if i == active_idx {
                     let style = Style::default().fg(Color::Blue);
-                    if ctx.is_playing() {
+                    if app.state.is_playing {
                         self.animate(
                             vec![Span::styled("▶", style), Span::raw(" ")],
-                            Duration::from_secs_f64(60.0 / ctx.bpm() as f64),
+                            Duration::from_secs_f64(60.0 / app.state.bpm as f64),
                         )
                     } else {
                         Span::styled("▶", style)
@@ -249,7 +265,7 @@ impl View {
         f.render_stateful_widget(patterns, sections[1], &mut self.patterns.state);
     }
 
-    fn render_project_tree(&mut self, f: &mut Frame, ctx: ViewContext, area: Rect) {
+    fn render_project_tree(&mut self, f: &mut Frame, app: &App, area: Rect) {
         let highlight_style = if self.focus == Focus::ProjectTree {
             Style::default().fg(Color::Black).bg(Color::Green)
         } else {
@@ -257,8 +273,9 @@ impl View {
         };
         match self.project_tree_state {
             ProjectTreeState::Tracks => {
-                let tracks: Vec<ListItem> = ctx
-                    .tracks()
+                let tracks: Vec<ListItem> = app
+                    .state
+                    .tracks
                     .iter()
                     .enumerate()
                     .map(|(i, track)| {
@@ -281,7 +298,8 @@ impl View {
                 f.render_stateful_widget(tracks, area, &mut self.tracks.state);
             }
             ProjectTreeState::Devices(track_idx) => {
-                let devices: Vec<ListItem> = ctx
+                let devices: Vec<ListItem> = app
+                    .state
                     .devices(track_idx)
                     .iter()
                     .enumerate()
@@ -290,7 +308,7 @@ impl View {
                     })
                     .collect();
 
-                let track_name = ctx.tracks()[track_idx]
+                let track_name = app.state.tracks[track_idx]
                     .name
                     .clone()
                     .unwrap_or(format!("Track {track_idx}"));
@@ -307,7 +325,7 @@ impl View {
             ProjectTreeState::InstrumentParams(instrument_idx) => {
                 // TODO: maybe use a table here to align values?
                 let w = (area.width as f32 * 0.6) as usize;
-                let params: Vec<ListItem> = ctx
+                let params: Vec<ListItem> = app
                     .params(instrument_idx)
                     .iter()
                     .enumerate()
@@ -322,7 +340,7 @@ impl View {
                         )))
                     })
                     .collect();
-                let name: &str = ctx.instruments()[instrument_idx]
+                let name: &str = app.state.instruments[instrument_idx]
                     .as_ref()
                     .unwrap()
                     .name
@@ -339,8 +357,9 @@ impl View {
                 f.render_stateful_widget(params, area, &mut self.params.state);
             }
             ProjectTreeState::Instruments => {
-                let instruments: Vec<ListItem> = ctx
-                    .instruments()
+                let instruments: Vec<ListItem> = app
+                    .state
+                    .instruments
                     .iter()
                     .enumerate()
                     .map(|(i, instr)| {
@@ -370,14 +389,14 @@ impl View {
         };
     }
 
-    fn render_sidebar(&mut self, f: &mut Frame, ctx: ViewContext, area: Rect) {
+    fn render_sidebar(&mut self, f: &mut Frame, app: &App, area: Rect) {
         let sections = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Ratio(1, 3), Constraint::Ratio(2, 3)].as_ref())
             .horizontal_margin(1)
             .split(area);
 
-        self.render_project_tree(f, ctx, sections[0]);
+        self.render_project_tree(f, app, sections[0]);
 
         // File Browser
         let file_block = Block::default()
@@ -401,7 +420,7 @@ impl View {
         } else {
             Style::default()
         };
-        let files: Vec<ListItem> = ctx
+        let files: Vec<ListItem> = app
             .file_browser
             .entries
             .iter()
@@ -421,7 +440,7 @@ impl View {
         let files = ListView::new(files).highlight_style(highlight_style);
         f.render_stateful_widget(files, file_sections[0], &mut self.files.state);
 
-        let dir = shorten_path(&ctx.file_browser.dir, file_sections[1].width as usize - 8);
+        let dir = shorten_path(&app.file_browser.dir, file_sections[1].width as usize - 8);
         let header = Paragraph::new(format!(" {}", dir)).block(
             Block::default()
                 .borders(Borders::TOP)
@@ -430,8 +449,8 @@ impl View {
         f.render_widget(header, file_sections[1]);
     }
 
-    pub fn handle_input(&mut self, key: KeyEvent, ctx: ViewContext) -> Msg {
-        match self.handle_input_inner(key, ctx) {
+    pub fn handle_input(&mut self, key: KeyEvent, app: &App) -> Msg {
+        match self.handle_input_inner(key, app) {
             Ok(change) => change,
             Err(err) => {
                 eprintln!("error: {}", err);
@@ -440,7 +459,7 @@ impl View {
         }
     }
 
-    fn handle_input_inner(&mut self, key: KeyEvent, ctx: ViewContext) -> Result<Msg> {
+    fn handle_input_inner(&mut self, key: KeyEvent, app: &App) -> Result<Msg> {
         use Msg::*;
 
         if key.code == KeyCode::Char('w') && key.modifiers.contains(KeyModifiers::CONTROL) {
@@ -477,7 +496,10 @@ impl View {
                         }
                         "bpm" => Ok(SetBpm(parts[1].parse()?)),
                         "quit" | "q" | "exit" => Ok(Exit),
-                        "setlength" if parts.len() == 2 => Ok(SetPatternLen(parts[1].parse()?)),
+                        "setlength" if parts.len() == 2 => {
+                            let new_length = parts[1].parse()?;
+                            Ok(app.update_pattern(|p| p.set_len(new_length)))
+                        }
                         "cd" => {
                             if parts.len() > 1 {
                                 Ok(ChangeDir(Utf8PathBuf::from(parts[1])))
@@ -514,7 +536,8 @@ impl View {
                 if let Some(s) = &mut self.selection {
                     match key.code {
                         KeyCode::Char('y') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                            self.clipboard = Some((ctx.selected_pattern().clone(), s.clone()));
+                            self.clipboard =
+                                Some((app.state.selected_pattern().clone(), s.clone()));
                             self.selection = None;
                             return Ok(Noop);
                         }
@@ -531,7 +554,7 @@ impl View {
                         && key.modifiers.contains(KeyModifiers::CONTROL)
                     {
                         let msg =
-                            ctx.update_pattern(|p| p.copy(self.cursor.pos, pattern, selection));
+                            app.update_pattern(|p| p.copy(self.cursor.pos, pattern, selection));
                         self.clipboard = None;
                         return Ok(msg);
                     }
@@ -539,11 +562,11 @@ impl View {
 
                 match key.code {
                     KeyCode::Char('m') if key.modifiers.contains(KeyModifiers::ALT) => {
-                        let track = ctx.track(self.cursor.pos.track());
+                        let track = &app.state.tracks[self.cursor.pos.track()];
                         return Ok(ParamToggle(track.device_id, TrackParams::MUTE));
                     }
                     KeyCode::Char('=') if key.modifiers.contains(KeyModifiers::ALT) => {
-                        let track = ctx.track(self.cursor.pos.track());
+                        let track = &app.state.tracks[self.cursor.pos.track()];
                         return Ok(ParamInc(
                             track.device_id,
                             TrackParams::VOLUME,
@@ -551,7 +574,7 @@ impl View {
                         ));
                     }
                     KeyCode::Char('-') if key.modifiers.contains(KeyModifiers::ALT) => {
-                        let track = ctx.track(self.cursor.pos.track());
+                        let track = &app.state.tracks[self.cursor.pos.track()];
                         return Ok(ParamDec(
                             track.device_id,
                             TrackParams::VOLUME,
@@ -565,7 +588,7 @@ impl View {
                     }
                     KeyCode::Char(' ') => return Ok(TogglePlay),
                     KeyCode::Backspace => {
-                        let msg = ctx.update_pattern(|p| p.clear(self.cursor.pos));
+                        let msg = app.update_pattern(|p| p.clear(self.cursor.pos));
                         if self.cursor.pos.is_pitch_input() {
                             self.cursor.down();
                         }
@@ -609,23 +632,23 @@ impl View {
                     }
                     KeyCode::Char('[') => {
                         return Ok(
-                            ctx.update_pattern(|p| p.incr(self.cursor.pos, StepSize::Default))
+                            app.update_pattern(|p| p.incr(self.cursor.pos, StepSize::Default))
                         )
                     }
                     KeyCode::Char(']') => {
                         return Ok(
-                            ctx.update_pattern(|p| p.decr(self.cursor.pos, StepSize::Default))
+                            app.update_pattern(|p| p.decr(self.cursor.pos, StepSize::Default))
                         )
                     }
                     KeyCode::Char('{') => {
-                        return Ok(ctx.update_pattern(|p| p.incr(self.cursor.pos, StepSize::Large)))
+                        return Ok(app.update_pattern(|p| p.incr(self.cursor.pos, StepSize::Large)))
                     }
                     KeyCode::Char('}') => {
-                        return Ok(ctx.update_pattern(|p| p.decr(self.cursor.pos, StepSize::Large)))
+                        return Ok(app.update_pattern(|p| p.decr(self.cursor.pos, StepSize::Large)))
                     }
                     KeyCode::Char(key) => {
-                        let msg = ctx.update_pattern(|p| {
-                            p.set_key(self.cursor.pos, ctx.octave() as u8, key)
+                        let msg = app.update_pattern(|p| {
+                            p.set_key(self.cursor.pos, app.state.octave as u8, key)
                         });
                         if self.cursor.pos.is_pitch_input() {
                             self.cursor.down()
@@ -655,7 +678,7 @@ impl View {
                 KeyCode::Enter => return Ok(SelectPattern(self.patterns.pos)),
                 _ => self.patterns.input(key),
             },
-            Focus::ProjectTree => return self.handle_project_tree_input(key, ctx),
+            Focus::ProjectTree => return self.handle_project_tree_input(key, app),
             Focus::FileLoader => {
                 match key.code {
                     KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -665,19 +688,19 @@ impl View {
                         self.instruments.next()
                     }
                     KeyCode::Char('u') => {
-                        if let Some(dir) = ctx.file_browser.dir.parent() {
+                        if let Some(dir) = app.file_browser.dir.parent() {
                             self.files = List::default();
                             return Ok(ChangeDir(dir.to_path_buf()));
                         }
                     }
                     KeyCode::Char(' ') => {
-                        let selected_path = &ctx.file_browser.entries[self.files.pos];
+                        let selected_path = &app.file_browser.entries[self.files.pos];
                         if sampler::can_load_file(selected_path) {
                             return Ok(PreviewSound(selected_path.to_path_buf()));
                         }
                     }
                     KeyCode::Enter => {
-                        let selected_path = &ctx.file_browser.entries[self.files.pos];
+                        let selected_path = &app.file_browser.entries[self.files.pos];
                         let msg = if selected_path.is_dir() {
                             self.files = List::default();
                             ChangeDir(selected_path.to_path_buf())
@@ -697,7 +720,7 @@ impl View {
         Ok(Noop)
     }
 
-    fn handle_project_tree_input(&mut self, key: KeyEvent, ctx: ViewContext) -> Result<Msg> {
+    fn handle_project_tree_input(&mut self, key: KeyEvent, app: &App) -> Result<Msg> {
         use Msg::*;
         match key.code {
             KeyCode::Char('s') => {
@@ -721,7 +744,7 @@ impl View {
                 Ok(Noop)
             }
             ProjectTreeState::InstrumentParams(instr_idx) => {
-                let device_id = ctx.instruments()[instr_idx].as_ref().unwrap().id;
+                let device_id = app.state.instruments[instr_idx].as_ref().unwrap().id;
                 match key.code {
                     KeyCode::Char('u') => {
                         self.project_tree_state = ProjectTreeState::Instruments;
@@ -771,24 +794,25 @@ impl View {
         states[period.ceil() as usize % states.len()].clone()
     }
 
-    fn set_state(&mut self, ctx: ViewContext) {
-        self.patterns.set_len(ctx.song().len());
-        self.files.set_len(ctx.file_browser.entries.len());
+    fn set_state(&mut self, app: &App) {
+        self.patterns.set_len(app.state.song.len());
+        self.files.set_len(app.file_browser.entries.len());
         match self.project_tree_state {
             ProjectTreeState::InstrumentParams(instrument) => {
-                self.params.set_len(ctx.params(instrument).len());
+                self.params.set_len(app.params(instrument).len());
             }
             ProjectTreeState::Devices(track) => {
-                self.devices.set_len(ctx.devices(track).len());
+                self.devices.set_len(app.state.devices(track).len());
             }
             ProjectTreeState::Instruments => {
-                self.instruments.set_len(ctx.instruments().len());
+                self.instruments.set_len(app.state.instruments.len());
             }
             ProjectTreeState::Tracks => {
-                self.tracks.set_len(ctx.tracks().len());
+                self.tracks.set_len(app.state.tracks.len());
             }
         }
-        self.cursor.set_pattern_size(ctx.selected_pattern().size());
+        self.cursor
+            .set_pattern_size(app.state.selected_pattern().size());
     }
 }
 
