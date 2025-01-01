@@ -43,11 +43,13 @@ impl Param {
     }
 
     pub fn value(&self) -> f64 {
-        let mut current = self.current.load(Ordering::Relaxed);
+        let current = self.current.load(Ordering::Relaxed);
         let target = self.target.load(Ordering::Relaxed);
-        current = self.info.smoothing.next(current, target);
-        self.current.store(current, Ordering::Relaxed);
-        (self.info.map_value)(current)
+        let new = self.info.smoothing.next(current, target);
+        if new != current {
+            self.current.store(new, Ordering::Relaxed);
+        }
+        (self.info.map_value)(new)
     }
 
     pub fn target(&self) -> f64 {
