@@ -4,7 +4,6 @@ use std::time::Duration;
 
 use crate::app::{App, EngineState, Msg};
 use crate::engine::TrackParams;
-pub use crate::input::{Input, InputQueue};
 use crate::params::ParamIterExt;
 use crate::pattern;
 use crate::pattern::Pattern;

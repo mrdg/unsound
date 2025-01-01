@@ -8,25 +8,28 @@ mod audio;
 mod engine;
 mod env;
 mod files;
-mod input;
 mod params;
 mod pattern;
 mod sampler;
 mod view;
 
+use std::{
+    sync::mpsc::{self, Receiver},
+    thread,
+    time::Duration,
+};
+
 use anyhow::{anyhow, Result};
-use app::{EngineState, Msg};
 use assert_no_alloc::*;
-use audio::Stereo;
 use camino::Utf8PathBuf;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use engine::{Engine, INSTRUMENT_TRACKS};
-use ratatui::crossterm::event::{Event, KeyEventKind};
+use ratatui::crossterm::event::{self, Event, KeyEventKind};
 use ratatui::DefaultTerminal;
 use triple_buffer::Output;
-use view::InputQueue;
 
-use crate::app::{App, AppState};
+use crate::app::{App, AppState, EngineState, Msg};
+use crate::audio::Stereo;
+use crate::engine::{Engine, INSTRUMENT_TRACKS};
 use crate::view::View;
 
 #[cfg(debug_assertions)]
@@ -124,15 +127,15 @@ fn run_app(
     mut engine_state_handle: Output<EngineState>,
     mut terminal: DefaultTerminal,
 ) -> Result<()> {
-    let mut input = InputQueue::new();
-
     let mut view = View::new();
+    let input = read_input_events();
+
     loop {
         let engine_state = engine_state_handle.read();
         terminal.draw(|f| view.render(f, &app, engine_state))?;
 
-        match input.next()? {
-            view::Input::Event(event) => match event {
+        match input.recv()? {
+            Input::Event(event) => match event {
                 Event::Key(event) if event.kind == KeyEventKind::Press => {
                     let msg = view.handle_input(event, &app);
                     if msg.is_exit() {
@@ -142,7 +145,33 @@ fn run_app(
                 }
                 _ => {}
             },
-            view::Input::Tick => {}
+            Input::Tick => {}
         }
     }
+}
+
+pub enum Input {
+    Event(Event),
+    Tick,
+}
+
+fn read_input_events() -> Receiver<Input> {
+    let (sender, receiver) = mpsc::channel();
+    {
+        let sender = sender.clone();
+        thread::spawn(move || loop {
+            let event = event::read().expect("event read");
+            sender
+                .send(Input::Event(event))
+                .expect("send keyboard input");
+        })
+    };
+    thread::spawn(move || loop {
+        if sender.send(Input::Tick).is_err() {
+            return;
+        }
+        thread::sleep(Duration::from_millis(33));
+    });
+
+    receiver
 }
