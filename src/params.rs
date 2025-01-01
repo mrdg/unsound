@@ -250,25 +250,25 @@ mod tests {
     fn test_smoothing() {
         let time = 1.0;
         let sample_rate = 44100.0;
-        let start = 1.0;
-        let end = 2.0;
+        let initial = 1.0;
+        let target = 2.0;
 
         let param = Param::new(
-            start,
+            initial,
             ParamInfo::new("Test", 0.0, 100.0)
                 .with_steps([1.0, 5.0])
                 .with_smoothing(ExpSmoothing::new(time, sample_rate)),
         );
         param.incr(StepSize::Default);
-        assert_eq!(end, param.target());
+        assert_eq!(target, param.target());
 
         let mut previous = f64::MIN;
         for _ in 0..(sample_rate * time / 1000.0).round() as usize {
             let current = param.value();
             assert!(current > previous);
-            assert!(current <= end);
+            assert!(current <= target);
             previous = current;
         }
-        assert_eq!(previous, param.value());
+        assert_eq!(target, previous);
     }
 }
