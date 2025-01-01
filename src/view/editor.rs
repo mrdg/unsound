@@ -105,9 +105,7 @@ impl<'a> Editor<'a> {
 
         let volume = self
             .app
-            .device_params
-            .get(&track.device_id)
-            .unwrap()
+            .params(track.device_id)
             .get_param(TrackParams::VOLUME);
 
         let volume = Paragraph::new(volume.as_string())
@@ -136,9 +134,7 @@ impl<'a> Editor<'a> {
 
         let muted = self
             .app
-            .device_params
-            .get(&track.device_id)
-            .unwrap()
+            .params(track.device_id)
             .get_param(TrackParams::MUTE);
 
         let button_style = if muted.as_bool() {

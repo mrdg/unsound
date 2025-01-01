@@ -27,7 +27,7 @@ pub struct App {
     state_buf: Input<AppState>,
     producer: Producer<EngineCommand>,
     pub file_browser: FileBrowser,
-    pub device_params: HashMap<DeviceId, Arc<dyn Params>>,
+    params: HashMap<DeviceId, Arc<dyn Params>>,
     preview_cache: LruCache<Utf8PathBuf, DeviceId>,
     preview_track_id: TrackId,
     collector: basedrop::Collector,
@@ -59,13 +59,13 @@ impl App {
                 let sampler: Box<dyn Plugin + Send> = Box::new(Sampler::new(snd));
                 let sampler = basedrop::Owned::new(&handle, sampler);
                 let sampler_id = DeviceId::new();
-                self.device_params.insert(sampler_id, sampler.params());
+                self.params.insert(sampler_id, sampler.params());
 
                 let cmd = EngineCommand::CreateInstrument(sampler_id, sampler);
                 self.send_to_engine(cmd)?;
 
                 if let Some(instr) = &self.state.instruments[idx] {
-                    self.device_params.remove(&instr.id);
+                    self.params.remove(&instr.id);
                     self.send_to_engine(EngineCommand::DeleteInstrument(instr.id))?;
                 }
 
@@ -193,33 +193,28 @@ impl App {
                 let track = engine::Track::new();
                 let rms = track.rms_out.clone();
                 let track_info = Track::new(rms);
-                self.device_params
-                    .insert(track_info.device_id, track.params());
+                self.params.insert(track_info.device_id, track.params());
 
                 let cmd = EngineCommand::CreateTrack(track_info.id, Box::new(track));
                 self.send_to_engine(cmd)?;
                 self.state.tracks.insert(idx, track_info);
             }
             ParamInc(device_id, param_idx, step_size) => {
-                let params = self.device_params.get(&device_id).unwrap();
-                params.get_param(param_idx).incr(step_size);
+                self.params(device_id).get_param(param_idx).incr(step_size);
             }
             ParamDec(device_id, param_idx, step_size) => {
-                let params = self.device_params.get(&device_id).unwrap();
-                params.get_param(param_idx).decr(step_size);
+                self.params(device_id).get_param(param_idx).decr(step_size);
             }
             ParamToggle(device_id, param_idx) => {
-                let params = self.device_params.get(&device_id).unwrap();
-                params.get_param(param_idx).toggle();
+                self.params(device_id).get_param(param_idx).toggle();
             }
         }
 
         Ok(())
     }
 
-    pub fn params(&self, track_idx: usize) -> &Arc<dyn Params> {
-        let device = &self.state.instruments[track_idx].as_ref().unwrap().id;
-        self.device_params.get(device).unwrap()
+    pub fn params(&self, id: DeviceId) -> &Arc<dyn Params> {
+        &self.params.get(&id).unwrap()
     }
 
     pub fn update_pattern<F>(&self, f: F) -> Msg
@@ -306,10 +301,6 @@ impl AppState {
     pub fn selected_pattern(&self) -> &Pattern {
         let id = self.song[self.selected_pattern];
         self.patterns.get(&id).unwrap()
-    }
-
-    pub fn devices(&self, track_idx: usize) -> &Vec<Device> {
-        &self.tracks[track_idx].effects
     }
 
     pub fn loop_contains(&self, idx: usize) -> bool {
@@ -432,7 +423,7 @@ pub fn new() -> Result<(App, Output<AppState>, Engine, Output<EngineState>)> {
         state_buf: app_state_input,
         producer,
         file_browser: FileBrowser::with_path("./sounds")?,
-        device_params,
+        params: device_params,
         preview_track_id,
         preview_cache,
         collector: basedrop::Collector::new(),

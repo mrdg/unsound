@@ -68,7 +68,10 @@ impl View {
 
 impl View {
     pub fn render(&mut self, f: &mut Frame, app: &App, engine_state: &EngineState) {
-        self.set_state(app);
+        self.patterns.set_len(app.state.song.len());
+        self.files.set_len(app.file_browser.entries.len());
+        self.cursor
+            .set_pattern_size(app.state.selected_pattern().size());
         self.frames += 1;
 
         let screen = f.area();
@@ -272,6 +275,7 @@ impl View {
         };
         match self.project_tree_state {
             ProjectTreeState::Tracks => {
+                self.tracks.set_len(app.state.tracks.len());
                 let tracks: Vec<ListItem> = app
                     .state
                     .tracks
@@ -297,9 +301,9 @@ impl View {
                 f.render_stateful_widget(tracks, area, &mut self.tracks.state);
             }
             ProjectTreeState::Devices(track_idx) => {
-                let devices: Vec<ListItem> = app
-                    .state
-                    .devices(track_idx)
+                let devices = &app.state.tracks[track_idx].effects;
+                self.devices.set_len(devices.len());
+                let devices: Vec<ListItem> = devices
                     .iter()
                     .enumerate()
                     .map(|(i, dev)| {
@@ -322,10 +326,13 @@ impl View {
                 f.render_stateful_widget(devices, area, &mut self.devices.state);
             }
             ProjectTreeState::InstrumentParams(instrument_idx) => {
+                let instrument = app.state.instruments[instrument_idx].as_ref().unwrap();
+                let params = app.params(instrument.id);
+                self.params.set_len(params.len());
+
                 // TODO: maybe use a table here to align values?
                 let w = (area.width as f32 * 0.6) as usize;
-                let params: Vec<ListItem> = app
-                    .params(instrument_idx)
+                let params: Vec<ListItem> = params
                     .iter()
                     .enumerate()
                     .map(|(i, p)| {
@@ -339,16 +346,11 @@ impl View {
                         )))
                     })
                     .collect();
-                let name: &str = app.state.instruments[instrument_idx]
-                    .as_ref()
-                    .unwrap()
-                    .name
-                    .as_ref();
 
                 let params = ListView::new(params)
                     .block(
                         Block::default()
-                            .title(name)
+                            .title(instrument.name.as_ref())
                             .borders(Borders::ALL)
                             .border_style(Style::default().fg(BORDER_COLOR)),
                     )
@@ -356,6 +358,7 @@ impl View {
                 f.render_stateful_widget(params, area, &mut self.params.state);
             }
             ProjectTreeState::Instruments => {
+                self.instruments.set_len(app.state.instruments.len());
                 let instruments: Vec<ListItem> = app
                     .state
                     .instruments
@@ -776,8 +779,10 @@ impl View {
             ProjectTreeState::Instruments => {
                 match key.code {
                     KeyCode::Enter => {
-                        self.project_tree_state =
-                            ProjectTreeState::InstrumentParams(self.instruments.pos);
+                        let idx = self.instruments.pos;
+                        if app.state.instruments[idx].is_some() {
+                            self.project_tree_state = ProjectTreeState::InstrumentParams(idx);
+                        }
                     }
                     KeyCode::Char('l') => self.focus = Focus::FileLoader,
                     _ => self.instruments.input(key),
@@ -791,27 +796,6 @@ impl View {
         let elapsed = self.frames as f64 / 30.0;
         let period = elapsed / state_dur.as_secs_f64();
         states[period.ceil() as usize % states.len()].clone()
-    }
-
-    fn set_state(&mut self, app: &App) {
-        self.patterns.set_len(app.state.song.len());
-        self.files.set_len(app.file_browser.entries.len());
-        match self.project_tree_state {
-            ProjectTreeState::InstrumentParams(instrument) => {
-                self.params.set_len(app.params(instrument).len());
-            }
-            ProjectTreeState::Devices(track) => {
-                self.devices.set_len(app.state.devices(track).len());
-            }
-            ProjectTreeState::Instruments => {
-                self.instruments.set_len(app.state.instruments.len());
-            }
-            ProjectTreeState::Tracks => {
-                self.tracks.set_len(app.state.tracks.len());
-            }
-        }
-        self.cursor
-            .set_pattern_size(app.state.selected_pattern().size());
     }
 }
 
