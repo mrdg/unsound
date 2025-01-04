@@ -24,8 +24,11 @@ impl FileBrowser {
         self.entries.clear();
         for entry in fs::read_dir(path.as_ref())? {
             let entry = entry?;
-            let path = entry.path().canonicalize()?.try_into()?;
-            self.entries.push(path);
+            if let Ok(path) = entry.path().canonicalize() {
+                self.entries.push(path.try_into()?);
+            } else {
+                continue;
+            }
         }
         self.entries.sort();
         Ok(())
