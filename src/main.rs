@@ -8,6 +8,7 @@ mod audio;
 mod engine;
 mod env;
 mod files;
+mod input;
 mod params;
 mod pattern;
 mod sampler;
@@ -60,7 +61,7 @@ fn run() -> Result<()> {
     let num_tracks = INSTRUMENT_TRACKS;
 
     // Load some default sounds for easier testing
-    let sounds = vec![
+    let sounds = [
         "sounds/kick.wav",
         "sounds/snare.wav",
         "sounds/hihat-open.wav",
@@ -132,12 +133,13 @@ fn run_app(
 
     loop {
         let engine_state = engine_state_handle.read();
-        terminal.draw(|f| view.render(f, &app, engine_state))?;
+        app.engine_state.clone_from(engine_state);
+        terminal.draw(|f| view::render(&app, &mut view, f))?;
 
         match input.recv()? {
             Input::Event(event) => match event {
                 Event::Key(event) if event.kind == KeyEventKind::Press => {
-                    let msg = view.handle_input(event, &app);
+                    let msg = input::handle_key_event(&app, &mut view, event);
                     if msg.is_exit() {
                         return Ok(());
                     }

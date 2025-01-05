@@ -24,6 +24,8 @@ use std::sync::atomic::Ordering;
 
 pub struct App {
     pub state: AppState,
+    pub engine_state: EngineState,
+
     state_buf: Input<AppState>,
     producer: Producer<EngineCommand>,
     pub file_browser: FileBrowser,
@@ -214,7 +216,7 @@ impl App {
     }
 
     pub fn params(&self, id: DeviceId) -> &Arc<dyn Params> {
-        &self.params.get(&id).unwrap()
+        self.params.get(&id).unwrap()
     }
 
     pub fn update_pattern<F>(&self, f: F) -> Msg
@@ -249,7 +251,7 @@ impl App {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct EngineState {
     pub current_tick: usize,
     pub current_pattern: usize,
@@ -427,6 +429,7 @@ pub fn new() -> Result<(App, Output<AppState>, Engine, Output<EngineState>)> {
         preview_track_id,
         preview_cache,
         collector: basedrop::Collector::new(),
+        engine_state: EngineState::default(),
     };
     Ok((app, app_state_output, engine, engine_state_output))
 }
