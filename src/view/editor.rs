@@ -2,7 +2,7 @@ use std::ops::Range;
 
 use crate::app::{App, Track};
 use crate::engine::TrackParams;
-use crate::pattern::{INPUTS_PER_STEP, MAX_PITCH};
+use crate::pattern::{Position, INPUTS_PER_STEP, MAX_PITCH};
 use crate::view::{render_outer_block, Focus, View, BORDER_COLOR};
 
 use ratatui::layout::{Alignment, Constraint, Direction, Layout};
@@ -21,6 +21,7 @@ const STEPS_WIDTH: u16 = " 256 ".len() as u16;
 
 #[derive(Clone, Default)]
 pub struct EditorState {
+    pub cursor: Position,
     line_offset: usize,
     track_offset: usize,
 }
@@ -36,8 +37,14 @@ pub fn render(app: &App, view: &mut View, area: Rect, buf: &mut Buffer) {
 
     let header_height = 1;
     let height = pattern_area.height as usize - header_height - 1;
+
     let pattern = app.state.selected_pattern();
     let mut last_line = view.editor.line_offset + std::cmp::min(height, pattern.len());
+
+    let pattern_size = pattern.size();
+    let cursor = &mut view.editor.cursor;
+    cursor.line = usize::min(pattern_size.lines - 1, cursor.line);
+    cursor.column = usize::min(pattern_size.columns - 1, cursor.column);
 
     if last_line > pattern.len() {
         // pattern length must have been changed so reset offset
@@ -45,18 +52,18 @@ pub fn render(app: &App, view: &mut View, area: Rect, buf: &mut Buffer) {
         last_line = view.editor.line_offset + std::cmp::min(height, pattern.len());
     }
 
-    if view.cursor.pos.line >= last_line {
-        last_line = view.cursor.pos.line + 1;
+    if view.editor.cursor.line >= last_line {
+        last_line = view.editor.cursor.line + 1;
         view.editor.line_offset = last_line - height;
-    } else if view.cursor.pos.line < view.editor.line_offset {
-        view.editor.line_offset = view.cursor.pos.line;
+    } else if view.editor.cursor.line < view.editor.line_offset {
+        view.editor.line_offset = view.editor.cursor.line;
         last_line = view.editor.line_offset + height;
     }
 
     let pattern_width = pattern_area.width - STEPS_WIDTH;
     let num_tracks = ((pattern_width - BUS_TRACK_WIDTH) / TRACK_WIDTH) as usize;
 
-    let selected_track = view.cursor.pos.track();
+    let selected_track = view.editor.cursor.track();
     if selected_track >= view.editor.track_offset + num_tracks {
         view.editor.track_offset = selected_track + 1 - num_tracks;
     } else if selected_track < view.editor.track_offset {
@@ -295,8 +302,8 @@ fn render_track_steps(
                 .unwrap_or(false);
 
             if matches!(view.focus, Focus::Editor)
-                && view.cursor.pos.line == line
-                && view.cursor.pos.column == column + offset
+                && view.editor.cursor.line == line
+                && view.editor.cursor.column == column + offset
             {
                 Style::default().bg(Color::Green).fg(Color::Black)
             } else if selected {

@@ -7,7 +7,7 @@ use ratatui::{
 
 use crate::app::{App, Msg};
 use crate::engine::TrackParams;
-use crate::pattern::{self, Position, Selection, StepSize, INPUTS_PER_STEP};
+use crate::pattern::{Selection, StepSize, INPUTS_PER_STEP};
 use crate::sampler;
 use crate::view::{Focus, ProjectTreeState, View};
 
@@ -120,7 +120,7 @@ fn handle_editor_input(app: &App, view: &mut View, key: KeyEvent) -> Result<Msg>
 
     if let Some((pattern, selection)) = &view.clipboard {
         if key.code == KeyCode::Char('v') && key.modifiers.contains(KeyModifiers::CONTROL) {
-            let msg = app.update_pattern(|p| p.copy(view.cursor.pos, pattern, selection));
+            let msg = app.update_pattern(|p| p.copy(view.editor.cursor, pattern, selection));
             view.clipboard = None;
             return Ok(msg);
         }
@@ -128,11 +128,11 @@ fn handle_editor_input(app: &App, view: &mut View, key: KeyEvent) -> Result<Msg>
 
     match key.code {
         KeyCode::Char('m') if key.modifiers.contains(KeyModifiers::ALT) => {
-            let track = &app.state.tracks[view.cursor.pos.track()];
+            let track = &app.state.tracks[view.editor.cursor.track()];
             return Ok(ParamToggle(track.device_id, TrackParams::MUTE));
         }
         KeyCode::Char('=') if key.modifiers.contains(KeyModifiers::ALT) => {
-            let track = &app.state.tracks[view.cursor.pos.track()];
+            let track = &app.state.tracks[view.editor.cursor.track()];
             return Ok(ParamInc(
                 track.device_id,
                 TrackParams::VOLUME,
@@ -140,7 +140,7 @@ fn handle_editor_input(app: &App, view: &mut View, key: KeyEvent) -> Result<Msg>
             ));
         }
         KeyCode::Char('-') if key.modifiers.contains(KeyModifiers::ALT) => {
-            let track = &app.state.tracks[view.cursor.pos.track()];
+            let track = &app.state.tracks[view.editor.cursor.track()];
             return Ok(ParamDec(
                 track.device_id,
                 TrackParams::VOLUME,
@@ -148,32 +148,48 @@ fn handle_editor_input(app: &App, view: &mut View, key: KeyEvent) -> Result<Msg>
             ));
         }
         KeyCode::Char('v') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            let pos = view.cursor.pos;
+            let pos = view.editor.cursor;
             view.selection = Some(Selection::new(pos, pos));
             return Ok(Noop);
         }
         KeyCode::Char(' ') => return Ok(TogglePlay),
         KeyCode::Backspace => {
-            let msg = app.update_pattern(|p| p.clear(view.cursor.pos));
-            if view.cursor.pos.is_pitch_input() {
-                view.cursor.down();
+            let msg = app.update_pattern(|p| p.clear(view.editor.cursor));
+            if view.editor.cursor.is_pitch_input() {
+                move_editor_cursor(app, view, CursorMove::Down);
             }
             return Ok(msg);
         }
-        KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => view.cursor.down(),
-        KeyCode::Down => view.cursor.down(),
-        KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => view.cursor.up(),
-        KeyCode::Up => view.cursor.up(),
-        KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => view.cursor.right(),
-        KeyCode::Right => view.cursor.right(),
-        KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) => view.cursor.left(),
-        KeyCode::Left => view.cursor.left(),
-        KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => view.cursor.start(),
-        KeyCode::Home => view.cursor.start(),
-        KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => view.cursor.end(),
-        KeyCode::End => view.cursor.end(),
-        KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::ALT) => view.cursor.next_track(),
-        KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::ALT) => view.cursor.prev_track(),
+        KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            move_editor_cursor(app, view, CursorMove::Down)
+        }
+        KeyCode::Down => move_editor_cursor(app, view, CursorMove::Down),
+        KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            move_editor_cursor(app, view, CursorMove::Up)
+        }
+        KeyCode::Up => move_editor_cursor(app, view, CursorMove::Up),
+        KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            move_editor_cursor(app, view, CursorMove::Right)
+        }
+        KeyCode::Right => move_editor_cursor(app, view, CursorMove::Right),
+        KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            move_editor_cursor(app, view, CursorMove::Left)
+        }
+        KeyCode::Left => move_editor_cursor(app, view, CursorMove::Left),
+        KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            move_editor_cursor(app, view, CursorMove::LineStart)
+        }
+        KeyCode::Home => move_editor_cursor(app, view, CursorMove::LineStart),
+        KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            move_editor_cursor(app, view, CursorMove::LineEnd)
+        }
+        KeyCode::End => move_editor_cursor(app, view, CursorMove::LineEnd),
+        KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::ALT) => {
+            move_editor_cursor(app, view, CursorMove::NextTrack)
+        }
+        KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::ALT) => {
+            move_editor_cursor(app, view, CursorMove::PrevTrack)
+        }
         KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             return Ok(NextPattern)
         }
@@ -181,29 +197,29 @@ fn handle_editor_input(app: &App, view: &mut View, key: KeyEvent) -> Result<Msg>
             return Ok(PrevPattern)
         }
         KeyCode::Char('[') => {
-            return Ok(app.update_pattern(|p| p.incr(view.cursor.pos, StepSize::Default)))
+            return Ok(app.update_pattern(|p| p.incr(view.editor.cursor, StepSize::Default)))
         }
         KeyCode::Char(']') => {
-            return Ok(app.update_pattern(|p| p.decr(view.cursor.pos, StepSize::Default)))
+            return Ok(app.update_pattern(|p| p.decr(view.editor.cursor, StepSize::Default)))
         }
         KeyCode::Char('{') => {
-            return Ok(app.update_pattern(|p| p.incr(view.cursor.pos, StepSize::Large)))
+            return Ok(app.update_pattern(|p| p.incr(view.editor.cursor, StepSize::Large)))
         }
         KeyCode::Char('}') => {
-            return Ok(app.update_pattern(|p| p.decr(view.cursor.pos, StepSize::Large)))
+            return Ok(app.update_pattern(|p| p.decr(view.editor.cursor, StepSize::Large)))
         }
         KeyCode::Char(key) => {
             let msg =
-                app.update_pattern(|p| p.set_key(view.cursor.pos, app.state.octave as u8, key));
-            if view.cursor.pos.is_pitch_input() {
-                view.cursor.down()
+                app.update_pattern(|p| p.set_key(view.editor.cursor, app.state.octave as u8, key));
+            if view.editor.cursor.is_pitch_input() {
+                move_editor_cursor(app, view, CursorMove::Down)
             }
             return Ok(msg);
         }
         _ => {}
     }
     if let Some(s) = &mut view.selection {
-        s.move_to(view.cursor.pos);
+        s.move_to(view.editor.cursor);
     }
 
     Ok(Noop)
@@ -333,57 +349,6 @@ fn handle_project_tree_input(app: &App, view: &mut View, key: KeyEvent) -> Resul
     }
 }
 
-#[derive(Default)]
-pub struct Cursor {
-    pub pos: Position,
-    pub pattern_size: pattern::Rect,
-}
-
-impl Cursor {
-    pub fn set_pattern_size(&mut self, size: pattern::Rect) {
-        self.pos.line = usize::min(size.lines - 1, self.pos.line);
-        self.pos.column = usize::min(size.columns - 1, self.pos.column);
-        self.pattern_size = size;
-    }
-
-    fn up(&mut self) {
-        self.pos.line = self.pos.line.saturating_sub(1);
-    }
-
-    fn down(&mut self) {
-        self.pos.line = usize::min(self.pattern_size.lines - 1, self.pos.line + 1);
-    }
-
-    fn left(&mut self) {
-        self.pos.column = self.pos.column.saturating_sub(1);
-    }
-
-    fn right(&mut self) {
-        self.pos.column = usize::min(self.pattern_size.columns - 1, self.pos.column + 1);
-    }
-
-    fn next_track(&mut self) {
-        let col = self.pos.column + INPUTS_PER_STEP;
-        if col <= self.pattern_size.columns {
-            self.pos.column = col;
-        }
-    }
-
-    fn prev_track(&mut self) {
-        if self.pos.track() > 0 {
-            self.pos.column -= INPUTS_PER_STEP;
-        }
-    }
-
-    fn start(&mut self) {
-        self.pos.column = 0;
-    }
-
-    fn end(&mut self) {
-        self.pos.column = self.pattern_size.columns - 1;
-    }
-}
-
 pub struct List {
     pub pos: usize,
     pub len: usize,
@@ -427,5 +392,43 @@ impl Default for List {
         };
         list.state.select(Some(0));
         list
+    }
+}
+
+enum CursorMove {
+    Up,
+    Down,
+    Left,
+    Right,
+    NextTrack,
+    PrevTrack,
+    LineStart,
+    LineEnd,
+}
+
+fn move_editor_cursor(app: &App, view: &mut View, cursor_move: CursorMove) {
+    use CursorMove::*;
+
+    let pattern_size = app.state.selected_pattern().size();
+    let cursor = &mut view.editor.cursor;
+
+    match cursor_move {
+        Up => cursor.line = cursor.line.saturating_sub(1),
+        Down => cursor.line = usize::min(pattern_size.lines - 1, cursor.line + 1),
+        Left => cursor.column = cursor.column.saturating_sub(1),
+        Right => cursor.column = usize::min(pattern_size.columns - 1, cursor.column + 1),
+        NextTrack => {
+            let col = cursor.column + INPUTS_PER_STEP;
+            if col <= pattern_size.columns {
+                cursor.column = col;
+            }
+        }
+        PrevTrack => {
+            if cursor.track() > 0 {
+                cursor.column -= INPUTS_PER_STEP;
+            }
+        }
+        LineStart => cursor.column = 0,
+        LineEnd => cursor.column = pattern_size.columns - 1,
     }
 }

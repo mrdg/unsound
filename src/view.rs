@@ -14,7 +14,7 @@ use ratatui::{
 };
 
 use crate::app::App;
-use crate::input::{Cursor, List};
+use crate::input::List;
 use crate::params::ParamIterExt;
 use crate::pattern::{Pattern, Selection};
 use crate::sampler;
@@ -40,7 +40,6 @@ pub enum ProjectTreeState {
 }
 
 pub struct View {
-    pub cursor: Cursor,
     pub focus: Focus,
     pub files: List,
     pub instruments: List,
@@ -52,8 +51,7 @@ pub struct View {
     pub selection: Option<Selection>,
     pub clipboard: Option<(Pattern, Selection)>,
     pub command: String,
-
-    editor: EditorState,
+    pub editor: EditorState,
     frames: usize,
 }
 
@@ -61,7 +59,6 @@ impl View {
     pub fn new() -> Self {
         Self {
             frames: 0,
-            cursor: Cursor::default(),
             instruments: List::default(),
             tracks: List::default(),
             devices: List::default(),
@@ -79,8 +76,6 @@ impl View {
 }
 
 pub fn render(app: &App, view: &mut View, f: &mut Frame) {
-    view.cursor
-        .set_pattern_size(app.state.selected_pattern().size());
     view.frames += 1;
 
     let screen = f.area();
