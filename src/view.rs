@@ -9,12 +9,11 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout},
     style::{Color, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List as ListView, ListItem, Paragraph, Widget},
+    widgets::{Block, Borders, List as ListView, ListItem, ListState, Paragraph, Widget},
     Frame,
 };
 
 use crate::app::App;
-use crate::input::List;
 use crate::params::ParamIterExt;
 use crate::pattern::{Pattern, Selection};
 use crate::sampler;
@@ -41,12 +40,12 @@ pub enum ProjectTreeState {
 
 pub struct View {
     pub focus: Focus,
-    pub files: List,
-    pub instruments: List,
-    pub params: List,
-    pub tracks: List,
-    pub devices: List,
-    pub patterns: List,
+    pub files: ListState,
+    pub instruments: ListState,
+    pub params: ListState,
+    pub tracks: ListState,
+    pub devices: ListState,
+    pub patterns: ListState,
     pub project_tree_state: ProjectTreeState,
     pub selection: Option<Selection>,
     pub clipboard: Option<(Pattern, Selection)>,
@@ -57,14 +56,15 @@ pub struct View {
 
 impl View {
     pub fn new() -> Self {
+        let list = ListState::default().with_selected(Some(0));
         Self {
             frames: 0,
-            instruments: List::default(),
-            tracks: List::default(),
-            devices: List::default(),
-            params: List::default(),
-            patterns: List::default(),
-            files: List::default(),
+            files: list.clone(),
+            instruments: list.clone(),
+            params: list.clone(),
+            tracks: list.clone(),
+            devices: list.clone(),
+            patterns: list.clone(),
             editor: EditorState::default(),
             focus: Focus::Editor,
             command: String::new(),
@@ -136,7 +136,6 @@ pub fn render(app: &App, view: &mut View, f: &mut Frame) {
 }
 
 fn render_patterns(app: &App, view: &mut View, f: &mut Frame, area: Rect) {
-    view.patterns.set_len(app.state.song.len());
     let right = area.width / 2 + 2;
     let left = area.width - right;
 
@@ -165,7 +164,7 @@ fn render_patterns(app: &App, view: &mut View, f: &mut Frame, area: Rect) {
 
     let highlight_style = highlight_style(view, Focus::Patterns);
     let patterns = ListView::new(patterns).highlight_style(highlight_style);
-    f.render_stateful_widget(patterns, sections[0], &mut view.patterns.state);
+    f.render_stateful_widget(patterns, sections[0], &mut view.patterns);
 
     let patterns: Vec<ListItem> = app
         .state
@@ -201,7 +200,7 @@ fn render_patterns(app: &App, view: &mut View, f: &mut Frame, area: Rect) {
         .borders(Borders::RIGHT)
         .border_style(Style::default().fg(BORDER_COLOR));
     let patterns = ListView::new(patterns).block(block);
-    f.render_stateful_widget(patterns, sections[1], &mut view.patterns.state);
+    f.render_stateful_widget(patterns, sections[1], &mut view.patterns);
 }
 
 fn render_status_line(app: &App, _view: &mut View, f: &mut Frame, area: Rect) {
@@ -229,7 +228,6 @@ fn render_project_tree(app: &App, view: &mut View, f: &mut Frame, area: Rect) {
     let highlight_style = highlight_style(view, Focus::ProjectTree);
     match view.project_tree_state {
         ProjectTreeState::Tracks => {
-            view.tracks.set_len(app.state.tracks.len());
             let tracks: Vec<ListItem> = app
                 .state
                 .tracks
@@ -252,11 +250,10 @@ fn render_project_tree(app: &App, view: &mut View, f: &mut Frame, area: Rect) {
                         .border_style(Style::default().fg(BORDER_COLOR)),
                 )
                 .highlight_style(highlight_style);
-            f.render_stateful_widget(tracks, area, &mut view.tracks.state);
+            f.render_stateful_widget(tracks, area, &mut view.tracks);
         }
         ProjectTreeState::Devices(track_idx) => {
             let devices = &app.state.tracks[track_idx].effects;
-            view.devices.set_len(devices.len());
             let devices: Vec<ListItem> = devices
                 .iter()
                 .enumerate()
@@ -277,12 +274,11 @@ fn render_project_tree(app: &App, view: &mut View, f: &mut Frame, area: Rect) {
                         .border_style(Style::default().fg(BORDER_COLOR)),
                 )
                 .highlight_style(highlight_style);
-            f.render_stateful_widget(devices, area, &mut view.devices.state);
+            f.render_stateful_widget(devices, area, &mut view.devices);
         }
         ProjectTreeState::InstrumentParams(instrument_idx) => {
             let instrument = app.state.instruments[instrument_idx].as_ref().unwrap();
             let params = app.params(instrument.id);
-            view.params.set_len(params.len());
 
             // TODO: maybe use a table here to align values?
             let w = (area.width as f32 * 0.6) as usize;
@@ -309,18 +305,17 @@ fn render_project_tree(app: &App, view: &mut View, f: &mut Frame, area: Rect) {
                         .border_style(Style::default().fg(BORDER_COLOR)),
                 )
                 .highlight_style(highlight_style);
-            f.render_stateful_widget(params, area, &mut view.params.state);
+            f.render_stateful_widget(params, area, &mut view.params);
         }
         ProjectTreeState::Instruments => {
-            view.instruments.set_len(app.state.instruments.len());
             let instruments: Vec<ListItem> = app
                 .state
                 .instruments
                 .iter()
                 .enumerate()
                 .map(|(i, instr)| {
-                    let selected = if i == view.instruments.pos && view.focus != Focus::ProjectTree
-                    {
+                    let is_selected = view.instruments.selected().map_or(false, |n| n == i);
+                    let selected = if is_selected && view.focus != Focus::ProjectTree {
                         Span::raw(">")
                     } else {
                         Span::raw(" ")
@@ -340,14 +335,12 @@ fn render_project_tree(app: &App, view: &mut View, f: &mut Frame, area: Rect) {
                         .border_style(Style::default().fg(BORDER_COLOR)),
                 )
                 .highlight_style(highlight_style);
-            f.render_stateful_widget(instruments, area, &mut view.instruments.state);
+            f.render_stateful_widget(instruments, area, &mut view.instruments);
         }
     };
 }
 
 fn render_file_browser(app: &App, view: &mut View, f: &mut Frame, area: Rect) {
-    view.files.set_len(app.file_browser.entries.len());
-
     let area = render_outer_block(f.buffer_mut(), area, Borders::ALL);
     let sections = Layout::default()
         .direction(Direction::Vertical)
@@ -373,7 +366,7 @@ fn render_file_browser(app: &App, view: &mut View, f: &mut Frame, area: Rect) {
         })
         .collect();
     let files = ListView::new(files).highlight_style(highlight_style);
-    f.render_stateful_widget(files, sections[0], &mut view.files.state);
+    f.render_stateful_widget(files, sections[0], &mut view.files);
 
     let dir = shorten_path(&app.file_browser.dir, sections[1].width as usize - 8);
     let header = Paragraph::new(format!(" {}", dir)).block(
