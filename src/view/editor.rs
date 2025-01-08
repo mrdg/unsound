@@ -274,20 +274,16 @@ fn render_track_steps(
 
         let fx_cmd1 = step
             .effect_cmd(0)
-            .map(|c| (c as char).to_string())
-            .unwrap_or_else(|| "-".into());
+            .map_or("-".into(), |c| (c as char).to_string());
         let fx_val1 = step
             .effect_val(0)
-            .map(|c| format!("{:3}", c))
-            .unwrap_or_else(|| "---".into());
+            .map_or("---".into(), |c| format!("{:3}", c));
         let fx_cmd2 = step
             .effect_cmd(1)
-            .map(|c| (c as char).to_string())
-            .unwrap_or_else(|| "-".into());
+            .map_or("-".into(), |c| (c as char).to_string());
         let fx_val2 = step
             .effect_val(1)
-            .map(|c| format!("{:3}", c))
-            .unwrap_or_else(|| "---".into());
+            .map_or("---".into(), |c| format!("{:3}", c));
 
         let line_style = if line % app.state.lines_per_beat as usize == 0 {
             Style::default().bg(Color::Indexed(236))
@@ -298,8 +294,7 @@ fn render_track_steps(
             let selected = view
                 .selection
                 .as_ref()
-                .map(|s| s.contains(line, column + offset))
-                .unwrap_or(false);
+                .map_or(false, |s| s.contains(line, column + offset));
 
             if matches!(view.focus, Focus::Editor)
                 && view.editor.cursor.line == line

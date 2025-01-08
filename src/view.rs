@@ -253,7 +253,8 @@ fn render_project_tree(app: &App, view: &mut View, f: &mut Frame, area: Rect) {
             f.render_stateful_widget(tracks, area, &mut view.tracks);
         }
         ProjectTreeState::Devices(track_idx) => {
-            let devices = &app.state.tracks[track_idx].effects;
+            let track = &app.state.tracks[track_idx];
+            let devices = &track.effects;
             let devices: Vec<ListItem> = devices
                 .iter()
                 .enumerate()
@@ -262,10 +263,10 @@ fn render_project_tree(app: &App, view: &mut View, f: &mut Frame, area: Rect) {
                 })
                 .collect();
 
-            let track_name = app.state.tracks[track_idx]
+            let track_name = track
                 .name
                 .clone()
-                .unwrap_or(format!("Track {track_idx}"));
+                .unwrap_or_else(|| format!("Track {track_idx}"));
             let devices = ListView::new(devices)
                 .block(
                     Block::default()
@@ -320,10 +321,7 @@ fn render_project_tree(app: &App, view: &mut View, f: &mut Frame, area: Rect) {
                     } else {
                         Span::raw(" ")
                     };
-                    let name = instr
-                        .as_ref()
-                        .map(|instr| instr.name.as_ref())
-                        .unwrap_or("");
+                    let name = instr.as_ref().map_or("", |instr| instr.name.as_ref());
                     let snd_desc = Span::raw(format!(" {:0width$} {}", i, name, width = 2));
                     ListItem::new(Line::from(vec![selected, snd_desc]))
                 })
