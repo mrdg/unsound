@@ -7,7 +7,9 @@ use ringbuf::{Producer, RingBuffer};
 use triple_buffer::{Input, Output, TripleBuffer};
 use ulid::Ulid;
 
-use crate::engine::{self, Engine, Plugin, INSTRUMENT_TRACKS, PREVIEW_INSTRUMENTS_CACHE_SIZE};
+use crate::engine::{
+    self, Engine, Plugin, Sequence, INSTRUMENT_TRACKS, PREVIEW_INSTRUMENTS_CACHE_SIZE,
+};
 use crate::files::FileBrowser;
 use crate::params::Params;
 use crate::pattern::{Step, StepSize, MAX_PATTERNS};
@@ -33,6 +35,7 @@ pub struct App {
     preview_cache: LruCache<Utf8PathBuf, DeviceId>,
     preview_track_id: TrackId,
     collector: basedrop::Collector,
+    patterns: HashMap<PatternId, Pattern>,
 }
 
 impl App {
@@ -143,7 +146,8 @@ impl App {
                 if self.state.song.len() > 1 {
                     let pattern_id = self.state.song.remove(idx);
                     if !self.state.song.contains(&pattern_id) {
-                        self.state.patterns.remove(&pattern_id);
+                        self.patterns.remove(&pattern_id);
+                        self.state.sequences.remove(&pattern_id);
                     }
                     if self.state.selected_pattern >= self.state.song.len() {
                         self.state.selected_pattern = self.state.selected_pattern.saturating_sub(1);
@@ -156,10 +160,11 @@ impl App {
                 }
             }
             UpdatePattern(id, pattern) => {
-                self.state.patterns.insert(id, Arc::new(pattern));
+                self.state.sequences.insert(id, pattern.compile());
+                self.patterns.insert(id, pattern);
             }
             CreatePattern(idx) => {
-                if self.state.patterns.len() < MAX_PATTERNS {
+                if self.state.sequences.len() < MAX_PATTERNS {
                     let id = self.next_pattern_id();
                     let num_instruments = self
                         .state
@@ -169,7 +174,8 @@ impl App {
                         .count();
 
                     let pattern = Pattern::new(num_instruments);
-                    self.state.patterns.insert(id, Arc::new(pattern));
+                    self.state.sequences.insert(id, pattern.compile());
+                    self.patterns.insert(id, pattern);
                     if let Some(idx) = idx {
                         self.state.song.insert(idx + 1, id);
                     } else {
@@ -183,11 +189,12 @@ impl App {
             }
             ClonePattern(idx) => {
                 let id = self.state.song[idx];
-                let p1: &Pattern = self.state.patterns.get(&id).unwrap();
+                let p1: &Pattern = self.patterns.get(&id).unwrap();
                 let mut p2 = p1.clone();
                 p2.color = random_color();
                 let new_id = self.next_pattern_id();
-                self.state.patterns.insert(new_id, Arc::new(p2));
+                self.state.sequences.insert(new_id, p2.compile());
+                self.patterns.insert(new_id, p2);
                 self.state.song.insert(idx + 1, new_id);
             }
             ChangeDir(dir) => self.file_browser.move_to(dir)?,
@@ -223,7 +230,7 @@ impl App {
     where
         F: Fn(&mut Pattern),
     {
-        let mut pattern = self.state.selected_pattern().clone();
+        let mut pattern = self.selected_pattern().clone();
         f(&mut pattern);
 
         let pattern_id = self.state.song[self.state.selected_pattern];
@@ -231,11 +238,11 @@ impl App {
     }
 
     fn next_pattern_id(&self) -> PatternId {
-        if self.state.patterns.is_empty() {
+        if self.state.sequences.is_empty() {
             return PatternId(0);
         }
         let mut max = 0;
-        for id in self.state.patterns.keys() {
+        for id in self.state.sequences.keys() {
             if id.0 > max {
                 max = id.0;
             }
@@ -249,12 +256,30 @@ impl App {
         }
         Ok(())
     }
+
+    pub fn song_iter(&self) -> impl Iterator<Item = &Pattern> {
+        self.state
+            .song
+            .iter()
+            .map(|id| self.patterns.get(id).unwrap())
+    }
+
+    pub fn selected_pattern(&self) -> &Pattern {
+        let id = self.state.song[self.state.selected_pattern];
+        self.patterns.get(&id).unwrap()
+    }
+
+    pub fn pattern_steps(&self, track_idx: usize, range: &Range<usize>) -> &[Step] {
+        let pattern = self.selected_pattern();
+        let steps = pattern.steps(track_idx);
+        &steps[range.start..range.end]
+    }
 }
 
 #[derive(Clone, Default)]
 pub struct EngineState {
     pub current_tick: usize,
-    pub current_pattern: usize,
+    pub current_sequence: usize,
 }
 
 impl EngineState {
@@ -276,7 +301,7 @@ pub struct AppState {
     pub octave: u16,
     pub is_playing: bool,
     pub selected_pattern: usize,
-    pub patterns: HashMap<PatternId, Arc<Pattern>>,
+    pub sequences: HashMap<PatternId, Sequence>,
     pub song: Vec<PatternId>,
     pub loop_range: Option<(usize, usize)>,
     pub instruments: Vec<Option<Instrument>>,
@@ -284,11 +309,11 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn pattern(&self, idx: usize) -> Option<&Arc<Pattern>> {
-        self.song.get(idx).and_then(|id| self.patterns.get(id))
+    pub fn sequence(&self, idx: usize) -> Option<&Sequence> {
+        self.song.get(idx).and_then(|id| self.sequences.get(id))
     }
 
-    pub fn next_pattern(&self, current: usize) -> usize {
+    pub fn next_sequence(&self, current: usize) -> usize {
         let (start, end) = match self.loop_range {
             Some(range) => range,
             None => (0, self.song.len() - 1),
@@ -300,27 +325,12 @@ impl AppState {
         next
     }
 
-    pub fn selected_pattern(&self) -> &Pattern {
-        let id = self.song[self.selected_pattern];
-        self.patterns.get(&id).unwrap()
-    }
-
     pub fn loop_contains(&self, idx: usize) -> bool {
         if let Some(loop_range) = self.loop_range {
             loop_range.0 <= idx && idx <= loop_range.1
         } else {
             false
         }
-    }
-
-    pub fn song_iter(&self) -> impl Iterator<Item = &Arc<Pattern>> {
-        self.song.iter().map(|id| self.patterns.get(id).unwrap())
-    }
-
-    pub fn pattern_steps(&self, track_idx: usize, range: &Range<usize>) -> &[Step] {
-        let pattern = self.selected_pattern();
-        let steps = pattern.steps(track_idx);
-        &steps[range.start..range.end]
     }
 }
 
@@ -372,7 +382,7 @@ pub enum TrackType {
 
 pub fn new() -> Result<(App, Output<AppState>, Engine, Output<EngineState>)> {
     let engine_state = EngineState {
-        current_pattern: 0,
+        current_sequence: 0,
         current_tick: 0,
     };
 
@@ -381,7 +391,7 @@ pub fn new() -> Result<(App, Output<AppState>, Engine, Output<EngineState>)> {
         lines_per_beat: 4,
         octave: 4,
         is_playing: false,
-        patterns: HashMap::new(),
+        sequences: HashMap::new(),
         song: Vec::new(),
         selected_pattern: 0,
         loop_range: Some((0, 0)),
@@ -430,6 +440,7 @@ pub fn new() -> Result<(App, Output<AppState>, Engine, Output<EngineState>)> {
         preview_cache,
         collector: basedrop::Collector::new(),
         engine_state: EngineState::default(),
+        patterns: HashMap::new(),
     };
     Ok((app, app_state_output, engine, engine_state_output))
 }

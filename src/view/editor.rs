@@ -38,7 +38,7 @@ pub fn render(app: &App, view: &mut View, area: Rect, buf: &mut Buffer) {
     let header_height = 1;
     let height = pattern_area.height as usize - header_height - 1;
 
-    let pattern = app.state.selected_pattern();
+    let pattern = app.selected_pattern();
     let mut last_line = view.editor.line_offset + std::cmp::min(height, pattern.len());
 
     let pattern_size = pattern.size();
@@ -258,7 +258,7 @@ fn render_track_steps(
     step_range: &Range<usize>,
 ) {
     let mut y = area.top() + 1;
-    for (line, step) in app.state.pattern_steps(idx, step_range).iter().enumerate() {
+    for (line, step) in app.pattern_steps(idx, step_range).iter().enumerate() {
         let line = line + step_range.start;
         let column = idx * INPUTS_PER_STEP;
 
@@ -335,7 +335,7 @@ fn render_track_steps(
 }
 
 fn is_current_line(app: &App, line: usize) -> bool {
-    if app.state.selected_pattern != app.engine_state.current_pattern {
+    if app.state.selected_pattern != app.engine_state.current_sequence {
         false
     } else {
         app.engine_state.current_line() == line

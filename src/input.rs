@@ -109,7 +109,7 @@ fn handle_editor_input(app: &App, view: &mut View, key: KeyEvent) -> Result<Msg>
     if let Some(s) = &mut view.selection {
         match key.code {
             KeyCode::Char('y') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                view.clipboard = Some((app.state.selected_pattern().clone(), s.clone()));
+                view.clipboard = Some((app.selected_pattern().clone(), s.clone()));
                 view.selection = None;
                 return Ok(Noop);
             }
@@ -392,7 +392,7 @@ fn handle_list_input(list: &mut ListState, key: KeyEvent) {
 fn move_editor_cursor(app: &App, view: &mut View, cursor_move: CursorMove) {
     use CursorMove::*;
 
-    let pattern_size = app.state.selected_pattern().size();
+    let pattern_size = app.selected_pattern().size();
     let cursor = &mut view.editor.cursor;
 
     match cursor_move {

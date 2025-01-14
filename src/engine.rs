@@ -11,7 +11,7 @@ use triple_buffer::Input;
 use crate::app::{AppState, DeviceId, EngineState, TrackId};
 use crate::audio::{Buffer, Rms, Stereo};
 use crate::params::{self, Param, ParamInfo, Params};
-use crate::pattern::{Note, DEFAULT_VELOCITY};
+use crate::pattern::DEFAULT_VELOCITY;
 use crate::{INTERNAL_BUFFER_SIZE, SAMPLE_RATE};
 use param_derive::Params;
 
@@ -91,42 +91,48 @@ impl Engine {
         if !state.is_playing {
             return;
         }
-        let mut curr_pattern = self.state.current_pattern;
-        let pattern = state.pattern(curr_pattern).unwrap_or_else(|| {
-            // The active pattern can be deleted while we're playing it. Continue with the
+        let mut seq_idx = self.state.current_sequence;
+        let sequence = state.sequence(seq_idx).unwrap_or_else(|| {
+            // The active sequence can be deleted while we're playing it. Continue with the
             // next one if that happens, which should always be safe to unwrap.
-            curr_pattern = state.next_pattern(curr_pattern);
-            state.pattern(curr_pattern).unwrap()
+            seq_idx = state.next_sequence(seq_idx);
+            state.sequence(seq_idx).unwrap()
         });
 
-        for event in pattern.events(self.state.current_tick) {
-            if let Some(instr) = &state.instruments[event.instrument] {
-                let track_id = state.tracks[event.track].id;
-                let track = self.tracks.get_mut(&track_id).unwrap();
+        // TODO: do a binary search?
+        for instruction in &sequence.instructions {
+            if instruction.offset > self.state.current_tick {
+                break;
+            }
+            if instruction.offset == self.state.current_tick {
+                if let Some(instr) = &state.instruments[instruction.instrument] {
+                    let track_id = &state.tracks[instruction.track].id;
+                    let track = self.tracks.get_mut(track_id).unwrap();
 
-                if let Some((tick, instr_id)) = track.last_event {
-                    if tick != self.total_ticks {
-                        let instr = self.instruments.get_mut(&instr_id).unwrap();
-                        instr.send_event(Event::new(offset, track_id, Note::Off));
+                    if let Some((tick, instr_id)) = track.last_event {
+                        if tick != self.total_ticks {
+                            let instr = self.instruments.get_mut(&instr_id).unwrap();
+                            instr.send_event(Event::new(offset, *track_id, Note::Off));
+                        }
                     }
-                }
 
-                track.last_event = Some((self.total_ticks, instr.id));
-                if let Note::Off = event.note {
-                    track.last_event = None;
-                }
+                    track.last_event = Some((self.total_ticks, instr.id));
+                    if let Note::Off = instruction.note {
+                        track.last_event = None;
+                    }
 
-                let instr = self.instruments.get_mut(&instr.id).unwrap();
-                instr.send_event(Event::new(offset, track_id, event.note));
+                    let instr = self.instruments.get_mut(&instr.id).unwrap();
+                    instr.send_event(Event::new(offset, *track_id, instruction.note));
+                }
             }
         }
 
         self.state.current_tick += 1;
-        if self.state.current_tick >= pattern.ticks() {
+        if self.state.current_tick >= sequence.length {
             self.state.current_tick = 0;
-            curr_pattern = state.next_pattern(curr_pattern);
+            seq_idx = state.next_sequence(seq_idx);
         }
-        self.state.current_pattern = curr_pattern;
+        self.state.current_sequence = seq_idx;
     }
 
     pub fn process(&mut self, state: &AppState, buffer: &mut [Stereo]) {
@@ -315,6 +321,23 @@ pub trait Plugin {
     fn send_event(&mut self, event: Event);
 }
 
+/// Data passed to a device for processing a single audio buffer
+pub struct ProcessContext<'a> {
+    pub num_frames: usize,
+    pub tracks: &'a mut HashMap<TrackId, Box<Track>>,
+}
+
+impl<'a> ProcessContext<'a> {
+    pub fn new(tracks: &'a mut HashMap<TrackId, Box<Track>>, num_frames: usize) -> Self {
+        Self { num_frames, tracks }
+    }
+
+    pub fn track_buffer(&mut self, track_id: TrackId, range: &Range<usize>) -> &mut [Stereo] {
+        let track = self.tracks.get_mut(&track_id).unwrap();
+        &mut track.buf[range.clone()]
+    }
+}
+
 #[derive(Clone, Copy)]
 pub struct Event {
     /// offset of the event within the audio buffer
@@ -333,19 +356,35 @@ impl Event {
     }
 }
 
-/// Data passed to a device for processing a single audio buffer
-pub struct ProcessContext<'a> {
-    pub num_frames: usize,
-    pub tracks: &'a mut HashMap<TrackId, Box<Track>>,
+#[derive(Clone, Debug)]
+pub struct Sequence {
+    /// length of this sequence in ticks
+    pub length: usize,
+    pub instructions: Vec<Instruction>,
 }
 
-impl<'a> ProcessContext<'a> {
-    pub fn new(tracks: &'a mut HashMap<TrackId, Box<Track>>, num_frames: usize) -> Self {
-        Self { num_frames, tracks }
-    }
+#[derive(Clone, Debug)]
+pub struct Instruction {
+    pub note: Note,
+    /// offset in ticks relative to the start of the sequence
+    pub offset: usize,
+    pub instrument: usize,
+    pub track: usize,
+}
 
-    pub fn track_buffer(&mut self, track_id: TrackId, range: &Range<usize>) -> &mut [Stereo] {
-        let track = self.tracks.get_mut(&track_id).unwrap();
-        &mut track.buf[range.clone()]
+impl Instruction {
+    pub fn new(note: Note, offset: usize, track: usize, instrument: usize) -> Self {
+        Self {
+            note,
+            offset,
+            instrument,
+            track,
+        }
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Note {
+    On(u8, u8),
+    Off,
 }

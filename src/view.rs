@@ -167,12 +167,11 @@ fn render_patterns(app: &App, view: &mut View, f: &mut Frame, area: Rect) {
     f.render_stateful_widget(patterns, sections[0], &mut view.patterns);
 
     let patterns: Vec<ListItem> = app
-        .state
         .song_iter()
         .enumerate()
         .map(|(i, pattern)| {
             let looped = if app.state.loop_contains(i) { "~" } else { " " };
-            let play_indicator = if i == app.engine_state.current_pattern {
+            let play_indicator = if i == app.engine_state.current_sequence {
                 let style = Style::default().fg(Color::Blue);
                 if app.state.is_playing {
                     animate(
@@ -206,7 +205,7 @@ fn render_patterns(app: &App, view: &mut View, f: &mut Frame, area: Rect) {
 fn render_status_line(app: &App, _view: &mut View, f: &mut Frame, area: Rect) {
     let playback_position = format!(
         " [ {:0width$} . {:0width$} ] ",
-        app.engine_state.current_pattern,
+        app.engine_state.current_sequence,
         app.engine_state.current_line(),
         width = 3
     );

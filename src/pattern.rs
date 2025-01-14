@@ -1,7 +1,9 @@
+use std::ops::{Add, Sub};
+
 use ratatui::style::Color;
 
+use crate::engine::{Instruction, Note, Sequence};
 use crate::{app::random_color, engine::INSTRUMENT_TRACKS, engine::TICKS_PER_LINE};
-use std::ops::{Add, Sub};
 
 pub const INPUTS_PER_STEP: usize = 6;
 pub const MAX_PITCH: u8 = 109;
@@ -110,10 +112,6 @@ impl Pattern {
         self.tracks[0].steps.len()
     }
 
-    pub fn ticks(&self) -> usize {
-        self.len() * TICKS_PER_LINE
-    }
-
     pub fn set_len(&mut self, new_len: usize) {
         if new_len > MAX_PATTERN_LEN {
             // TODO: return error
@@ -164,47 +162,6 @@ impl Pattern {
         self.step_mut(pos).cell_mut(pos.input().idx)
     }
 
-    // For each track in the pattern, return notes that should be played on the given tick. The
-    // tick is relative to the start of the pattern.
-    pub fn events(&self, tick: usize) -> impl Iterator<Item = NoteEvent> + '_ {
-        let line = tick / TICKS_PER_LINE;
-        self.tracks.iter().enumerate().flat_map(move |(i, track)| {
-            let step = &track.steps[line];
-            let line_tick = line * TICKS_PER_LINE;
-
-            let mut has_offset = false;
-            let offset_match = step.offsets().any(|offset| {
-                has_offset = true;
-                line_tick + offset as usize == tick
-            });
-
-            // TODO: ensure that instrument is always set when pitch is set (it will use the
-            // instrument you have selected in the instrument list). Otherwise the behavior
-            // here becomes inconsistent when editing the instrument list.
-            let instrument = step.instrument().unwrap_or(i as u8) as usize;
-            let velocity = step.velocity();
-
-            let notes = if (!has_offset && line_tick == tick) || offset_match {
-                let iter = step.notes().map(move |pitch| {
-                    let note = if pitch == NOTE_OFF {
-                        Note::Off
-                    } else {
-                        Note::On(pitch, velocity)
-                    };
-                    NoteEvent {
-                        note,
-                        track: i,
-                        instrument,
-                    }
-                });
-                Some(iter)
-            } else {
-                None
-            };
-            notes.into_iter().flatten()
-        })
-    }
-
     pub fn copy(&mut self, start: Position, src: &Pattern, selection: &Selection) {
         let dst_size = self.size();
         let src_size = selection.size();
@@ -228,24 +185,40 @@ impl Pattern {
             *self.cell_mut(start + pos) = src.cell(src_start + pos);
         }
     }
+
+    pub fn compile(&self) -> Sequence {
+        let mut instructions = Vec::new();
+        for (i, track) in self.tracks.iter().enumerate() {
+            let mut pattern_offset = 0;
+            for step in &track.steps {
+                let offset = u8::min(TICKS_PER_LINE as u8 - 1, step.offset().unwrap_or(0));
+                let note_offset = pattern_offset + offset as usize;
+                let instrument = step.instrument().unwrap_or(i as u8);
+                let velocity = step.velocity();
+                for pitch in step.notes() {
+                    let note = if pitch == NOTE_OFF {
+                        Note::Off
+                    } else {
+                        Note::On(pitch, velocity)
+                    };
+                    let note = Instruction::new(note, note_offset, i, instrument as usize);
+                    instructions.push(note);
+                }
+                pattern_offset += TICKS_PER_LINE;
+            }
+        }
+        instructions.sort_by(|a, b| a.offset.cmp(&b.offset));
+
+        Sequence {
+            length: self.len() * TICKS_PER_LINE,
+            instructions,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
 pub struct Track {
     steps: Vec<Step>,
-}
-
-#[derive(Clone)]
-pub struct NoteEvent {
-    pub note: Note,
-    pub instrument: usize,
-    pub track: usize,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Note {
-    On(u8, u8),
-    Off,
 }
 
 #[derive(Copy, Clone)]
@@ -390,14 +363,8 @@ impl Step {
             .unwrap_or(DEFAULT_VELOCITY)
     }
 
-    fn offsets(&self) -> impl Iterator<Item = u8> + '_ {
-        self.effects().flat_map(|e| {
-            if e.cmd == FX_OFFSET {
-                Some(u8::min(e.value, TICKS_PER_LINE as u8 - 1))
-            } else {
-                None
-            }
-        })
+    fn offset(&self) -> Option<u8> {
+        self.effects().find(|e| e.cmd == FX_OFFSET).map(|e| e.value)
     }
 
     fn effects(&self) -> impl Iterator<Item = Effect> + '_ {
@@ -604,6 +571,16 @@ mod tests {
         }
     }
 
+    fn collect_events(tick: usize, pattern: &Pattern) -> Vec<Instruction> {
+        let mut events = Vec::new();
+        for event in pattern.compile().instructions {
+            if event.offset == tick {
+                events.push(event);
+            }
+        }
+        events
+    }
+
     #[test]
     fn note_on_line() {
         let mut pattern = Pattern::new(2);
@@ -612,7 +589,7 @@ mod tests {
             *step = Step::default().pitch(60).into();
         }
 
-        let notes: Vec<NoteEvent> = pattern.events(0).collect();
+        let notes = collect_events(0, &pattern);
         let pitches: Vec<u8> = notes
             .iter()
             .map(|n| {
@@ -638,7 +615,7 @@ mod tests {
             .effect_cmd(0, FX_VELOCITY)
             .effect_val(0, 255)
             .into();
-        let notes: Vec<NoteEvent> = pattern.events(0).collect();
+        let notes = collect_events(0, &pattern);
         assert_eq!(1, notes.len());
         let ev = notes.first().unwrap();
         assert_eq!(Note::On(60, 127), ev.note);
@@ -653,7 +630,7 @@ mod tests {
             .effect_cmd(0, FX_OFFSET)
             .effect_val(0, 2)
             .into();
-        let notes: Vec<NoteEvent> = pattern.events(2).collect();
+        let notes = collect_events(2, &pattern);
         assert_eq!(1, notes.len());
     }
 
@@ -666,7 +643,7 @@ mod tests {
             .effect_cmd(0, FX_OFFSET)
             .effect_val(0, 14)
             .into();
-        let notes: Vec<NoteEvent> = pattern.events(11).collect();
+        let notes = collect_events(11, &pattern);
         assert_eq!(1, notes.len());
     }
 
@@ -679,7 +656,7 @@ mod tests {
             .effect_cmd(0, FX_OFFSET)
             .effect_val(0, 2)
             .into();
-        let notes: Vec<NoteEvent> = pattern.events(0).collect();
+        let notes = collect_events(0, &pattern);
         assert_eq!(0, notes.len());
     }
 
@@ -695,11 +672,12 @@ mod tests {
             .effect_val(1, 3)
             .into();
 
-        let notes: Vec<NoteEvent> = pattern.events(2).collect();
+        let notes = collect_events(2, &pattern);
         assert_eq!(1, notes.len());
 
-        let notes: Vec<NoteEvent> = pattern.events(3).collect();
-        assert_eq!(1, notes.len());
+        // The second offset is discarded
+        let notes = collect_events(3, &pattern);
+        assert_eq!(0, notes.len());
     }
 
     #[test]
@@ -712,7 +690,7 @@ mod tests {
             .effect_val(0, 3)
             .into();
 
-        let notes: Vec<NoteEvent> = pattern.events(0).collect();
+        let notes = collect_events(0, &pattern);
         assert_eq!(
             vec![Note::On(60, 100), Note::On(63, 100)],
             notes.iter().map(|n| n.note).collect::<Vec<Note>>()
@@ -728,7 +706,7 @@ mod tests {
             .effect_val(0, 3)
             .into();
 
-        let notes: Vec<NoteEvent> = pattern.events(0).collect();
+        let notes = collect_events(0, &pattern);
         assert_eq!(0, notes.len());
     }
 
@@ -742,7 +720,7 @@ mod tests {
             .effect_val(0, 3)
             .into();
 
-        let notes: Vec<NoteEvent> = pattern.events(0).collect();
+        let notes = collect_events(0, &pattern);
         assert_eq!(1, notes.len());
     }
 

@@ -1,9 +1,8 @@
 use crate::app::TrackId;
 use crate::audio::{Buffer, Frame, Stereo};
-use crate::engine::{Event, Plugin, ProcessContext, ProcessStatus};
+use crate::engine::{Event, Note, Plugin, ProcessContext, ProcessStatus};
 use crate::env::{Envelope, State as EnvelopeState};
 use crate::params::{self, format_millis, Param, ParamInfo, Params};
-use crate::pattern::Note;
 use crate::SAMPLE_RATE;
 use anyhow::Result;
 use camino::Utf8PathBuf;
@@ -300,8 +299,7 @@ pub fn can_load_file(path: &Utf8PathBuf) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::Track;
-    use crate::pattern::Note;
+    use crate::engine::{Note, Track};
     use std::collections::HashMap;
 
     #[test]
