@@ -83,7 +83,7 @@ pub struct ParamInfo {
     steps: [f64; 2],
     format_value: Box<FormatValue>,
     map_value: Box<MapValue>,
-    smoothing: Box<dyn Smoothing + Send + Sync>,
+    smoothing: Smoothing,
     true_value: f64,
 }
 
@@ -97,7 +97,7 @@ impl ParamInfo {
             max: max.into(),
             steps: Self::DEFAULT_STEPS,
             format_value: Box::new(format_default),
-            smoothing: Box::new(NoSmoothing),
+            smoothing: Smoothing::None,
             map_value: Box::new(|v| v),
             true_value: 1.0,
         }
@@ -132,11 +132,8 @@ impl ParamInfo {
         self
     }
 
-    pub fn with_smoothing<S>(mut self, smoothing: S) -> Self
-    where
-        S: Smoothing + Send + Sync + 'static,
-    {
-        self.smoothing = Box::new(smoothing);
+    pub fn with_smoothing(mut self, smoothing: Smoothing) -> Self {
+        self.smoothing = smoothing;
         self
     }
 
@@ -160,43 +157,33 @@ pub fn format_millis(v: f64) -> String {
     format!("{}ms", v)
 }
 
-pub trait Smoothing {
-    fn next(&self, current: f64, target: f64) -> f64;
+pub enum Smoothing {
+    Exp(f64),
+    None,
 }
 
-pub struct ExpSmoothing {
-    rate: f64,
-}
-
-impl ExpSmoothing {
-    pub fn new(ms: f64, sample_rate: f64) -> Self {
+impl Smoothing {
+    pub fn exp(ms: f64, sample_rate: f64) -> Self {
         let num_samples = (sample_rate * ms / 1000.0).round();
         let rate = 0.0001f64.powf(1.0 / num_samples);
-        Self { rate }
+        Self::Exp(rate)
     }
-}
 
-impl Default for ExpSmoothing {
-    fn default() -> Self {
-        Self::new(5.0, crate::SAMPLE_RATE)
+    pub fn exp_default() -> Self {
+        Self::exp(5.0, crate::SAMPLE_RATE)
     }
-}
 
-impl Smoothing for ExpSmoothing {
     fn next(&self, current: f64, target: f64) -> f64 {
-        let mut current = self.rate * current + (1.0 - self.rate) * target;
-        if (target - current).abs() < 0.0001 {
-            current = target;
+        match self {
+            Self::Exp(rate) => {
+                let mut current = rate * current + (1.0 - rate) * target;
+                if (target - current).abs() < 0.0001 {
+                    current = target;
+                }
+                current
+            }
+            Self::None => target,
         }
-        current
-    }
-}
-
-struct NoSmoothing;
-
-impl Smoothing for NoSmoothing {
-    fn next(&self, _current: f64, target: f64) -> f64 {
-        target
     }
 }
 
@@ -259,7 +246,7 @@ mod tests {
             initial,
             ParamInfo::new("Test", 0.0, 100.0)
                 .with_steps([1.0, 5.0])
-                .with_smoothing(ExpSmoothing::new(time, sample_rate)),
+                .with_smoothing(Smoothing::exp(time, sample_rate)),
         );
         param.incr(StepSize::Default);
         assert_eq!(target, param.target());

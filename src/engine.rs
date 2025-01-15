@@ -230,12 +230,12 @@ impl TrackParams {
                 -6.0,
                 ParamInfo::new("Volume", -60, 3)
                     .with_steps([0.25, 1.0])
-                    .with_smoothing(params::ExpSmoothing::default())
+                    .with_smoothing(params::Smoothing::exp_default())
                     .with_map(params::db_to_amp),
             ),
             mute: Param::new(
                 1.0,
-                ParamInfo::bool("Mute", 0.0).with_smoothing(params::ExpSmoothing::default()),
+                ParamInfo::bool("Mute", 0.0).with_smoothing(params::Smoothing::exp_default()),
             ),
         }
     }
