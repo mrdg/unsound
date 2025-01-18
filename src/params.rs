@@ -11,6 +11,7 @@ pub trait Params {
 
 pub struct Param {
     current: AtomicF64,
+    mapped: AtomicF64,
     target: AtomicF64,
     info: ParamInfo,
 }
@@ -20,6 +21,7 @@ impl Param {
         Self {
             target: AtomicF64::new(value),
             current: AtomicF64::new(value),
+            mapped: AtomicF64::new((info.map_value)(value)),
             info,
         }
     }
@@ -44,12 +46,17 @@ impl Param {
 
     pub fn value(&self) -> f64 {
         let current = self.current.load(Ordering::Relaxed);
+        let mut mapped = self.mapped.load(Ordering::Relaxed);
         let target = self.target.load(Ordering::Relaxed);
-        let new = self.info.smoothing.next(current, target);
-        if new != current {
-            self.current.store(new, Ordering::Relaxed);
+        if current != target {
+            let next = self.info.smoothing.next(current, target);
+            if next != current {
+                mapped = (self.info.map_value)(next);
+                self.current.store(next, Ordering::Relaxed);
+                self.mapped.store(mapped, Ordering::Relaxed);
+            }
         }
-        (self.info.map_value)(new)
+        mapped
     }
 
     pub fn target(&self) -> f64 {

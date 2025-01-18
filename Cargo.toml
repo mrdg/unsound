@@ -35,3 +35,8 @@ crossterm = "0.28.1"
 [profile.dev]
 # Without optimizations the app is too slow in dev builds
 opt-level = 3
+
+[profile.profiling]
+inherits = "release"
+debug = true
+strip = "none"

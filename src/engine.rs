@@ -245,7 +245,10 @@ impl Track {
     pub fn new() -> Self {
         Self {
             rms: Rms::new(RMS_WINDOW_SIZE),
-            rms_out: Arc::new([AtomicF64::new(0.0), AtomicF64::new(0.0)]),
+            rms_out: Arc::new([
+                AtomicF64::new(-f64::INFINITY),
+                AtomicF64::new(-f64::INFINITY),
+            ]),
             buf: vec![Stereo::ZERO; INTERNAL_BUFFER_SIZE],
             last_event: None,
             params: Arc::new(TrackParams::new()),
@@ -258,15 +261,19 @@ impl Track {
 
     fn process(&mut self, buf: &mut [Stereo]) {
         for (i, out) in buf.iter_mut().enumerate() {
-            let frame =
-                self.buf[i] * self.params.volume.value() as f32 * self.params.mute.value() as f32;
-            self.rms.add_frame(frame);
-            *out += frame;
-            self.buf[i] = Stereo::ZERO;
+            let volume = self.params.volume.value() as f32;
+            let mute = self.params.mute.value() as f32;
+            *out += self.buf[i] * volume * mute;
         }
+
+        self.rms.add_frames(&self.buf[..buf.len()]);
         let v = self.rms.value().to_db();
         self.rms_out[0].store(v.channel(0) as f64, Ordering::Relaxed);
         self.rms_out[1].store(v.channel(1) as f64, Ordering::Relaxed);
+
+        for frame in self.buf.iter_mut() {
+            *frame = Stereo::ZERO;
+        }
     }
 }
 

@@ -120,16 +120,18 @@ impl Rms {
         }
     }
 
-    pub fn add_frame(&mut self, frame: Stereo) {
-        self.sum -= self.squared[self.position];
-        let squared = frame * frame;
-        self.sum += squared;
-        self.squared[self.position] = squared;
-        self.position += 1;
-        if self.position >= self.squared.len() {
-            self.position = 0;
+    pub fn add_frames(&mut self, frames: &[Stereo]) {
+        for &frame in frames {
+            self.sum -= self.squared[self.position];
+            let squared = frame * frame;
+            self.sum += squared;
+            self.squared[self.position] = squared;
+            self.position += 1;
+            if self.position >= self.squared.len() {
+                self.position = 0;
+            }
         }
-        self.window_length = usize::min(self.window_length + 1, self.squared.len());
+        self.window_length = usize::min(self.window_length + frames.len(), self.squared.len());
     }
 
     pub fn value(&self) -> Stereo {
@@ -149,12 +151,6 @@ mod tests {
         ($($x:expr),+ $(,)?) => (
             Frame::new([$($x),+])
         );
-    }
-
-    fn add_frames(rms: &mut Rms, frames: &[Stereo]) {
-        for frame in frames {
-            rms.add_frame(*frame);
-        }
     }
 
     #[test]
@@ -183,26 +179,20 @@ mod tests {
     #[test]
     fn rms() {
         let mut rms = Rms::new(8);
-        add_frames(
-            &mut rms,
-            &[
-                frame![0.5, 0.5],
-                frame![-0.5, -0.5],
-                frame![0.5, 0.5],
-                frame![-0.5, -0.5],
-            ],
-        );
+        rms.add_frames(&[
+            frame![0.5, 0.5],
+            frame![-0.5, -0.5],
+            frame![0.5, 0.5],
+            frame![-0.5, -0.5],
+        ]);
         assert_eq!(frame![0.5, 0.5], rms.value());
-        add_frames(
-            &mut rms,
-            &[
-                frame![0.3, 0.3],
-                frame![-0.3, -0.3],
-                frame![0.3, 0.3],
-                frame![-0.3, -0.3],
-                frame![-0.3, -0.3],
-            ],
-        );
+        rms.add_frames(&[
+            frame![0.3, 0.3],
+            frame![-0.3, -0.3],
+            frame![0.3, 0.3],
+            frame![-0.3, -0.3],
+            frame![-0.3, -0.3],
+        ]);
         assert_eq!(frame![0.38729838, 0.38729838], rms.value());
     }
 }
