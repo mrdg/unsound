@@ -1265,7 +1265,6 @@ dependencies = [
  "cpal",
  "crossterm",
  "hound",
- "lazy_static",
  "lru 0.8.1",
  "param_derive",
  "rand",

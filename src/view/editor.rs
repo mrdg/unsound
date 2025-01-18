@@ -1,4 +1,5 @@
 use std::ops::Range;
+use std::sync::LazyLock;
 
 use crate::app::{App, Track};
 use crate::engine::TrackParams;
@@ -342,20 +343,18 @@ fn is_current_line(app: &App, line: usize) -> bool {
     }
 }
 
-lazy_static! {
-    static ref NOTE_NAMES: Vec<String> = {
-        let names = [
-            "C-", "C#", "D-", "D#", "E-", "F-", "F#", "G-", "G#", "A-", "A#", "B-",
-        ];
-        // 0 based octave notation instead of -2 based makes notes easier to read in the editor.
-        let mut notes: Vec<String> = (0..MAX_PITCH as usize)
-            .map(|pitch| {
-                let octave = pitch / 12;
-                format!("{}{}", names[pitch % 12], octave)
-            })
-            .collect();
+static NOTE_NAMES: LazyLock<Vec<String>> = LazyLock::new(|| {
+    let names = [
+        "C-", "C#", "D-", "D#", "E-", "F-", "F#", "G-", "G#", "A-", "A#", "B-",
+    ];
+    // 0 based octave notation instead of -2 based makes notes easier to read in the editor.
+    let mut notes: Vec<String> = (0..MAX_PITCH as usize)
+        .map(|pitch| {
+            let octave = pitch / 12;
+            format!("{}{}", names[pitch % 12], octave)
+        })
+        .collect();
 
-        notes.push("OFF".to_string());
-        notes
-    };
-}
+    notes.push("OFF".to_string());
+    notes
+});
