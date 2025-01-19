@@ -8,13 +8,13 @@ use triple_buffer::{Input, Output, TripleBuffer};
 use ulid::Ulid;
 
 use crate::engine::{
-    self, Engine, Plugin, Sequence, INSTRUMENT_TRACKS, PREVIEW_INSTRUMENTS_CACHE_SIZE,
+    self, Engine, EngineCommand, Plugin, Sequence, Track as EngineTrack, INSTRUMENT_TRACKS,
+    PREVIEW_INSTRUMENTS_CACHE_SIZE,
 };
 use crate::files::FileBrowser;
 use crate::params::Params;
-use crate::pattern::{Step, StepSize, MAX_PATTERNS};
+use crate::pattern::{Pattern, Step, StepSize};
 use crate::sampler::{self, Sampler, ROOT_PITCH};
-use crate::{engine::EngineCommand, pattern::Pattern};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -23,6 +23,8 @@ use std::fmt::Display;
 use std::fmt::Formatter;
 use std::ops::Range;
 use std::sync::atomic::Ordering;
+
+const MAX_PATTERNS: usize = 999;
 
 pub struct App {
     pub state: AppState,
@@ -199,7 +201,7 @@ impl App {
             }
             ChangeDir(dir) => self.file_browser.move_to(dir)?,
             CreateTrack(idx) => {
-                let track = engine::Track::new();
+                let track = EngineTrack::new();
                 let rms = track.rms_out.clone();
                 let track_info = Track::new(rms);
                 self.params.insert(track_info.device_id, track.params());

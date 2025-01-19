@@ -213,7 +213,6 @@ pub struct Track {
     /// Time and instrument id for the last note on event played on this track. This allows sending
     /// a note off to that device when a new event is played on this track.
     last_event: Option<(u64, DeviceId)>,
-
     params: Arc<TrackParams>,
 }
 

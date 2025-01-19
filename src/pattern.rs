@@ -8,7 +8,6 @@ use crate::{app::random_color, engine::INSTRUMENT_TRACKS, engine::TICKS_PER_LINE
 pub const INPUTS_PER_STEP: usize = 6;
 pub const MAX_PITCH: u8 = 109;
 pub const NOTE_OFF: u8 = MAX_PITCH;
-pub const MAX_PATTERNS: usize = 256;
 pub const DEFAULT_VELOCITY: u8 = 100;
 
 const DEFAULT_PATTERN_LEN: usize = 32;
