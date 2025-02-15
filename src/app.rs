@@ -1,28 +1,28 @@
+use std::collections::HashMap;
+use std::fmt::{self, Display, Formatter};
+use std::num::NonZeroUsize;
+use std::ops::Range;
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
+
 use anyhow::{anyhow, Result};
 use atomic_float::AtomicF64;
+use bit_set::BitSet;
 use camino::Utf8PathBuf;
 use lru::LruCache;
 use ratatui::style::Color;
-use ringbuf::{Producer, RingBuffer};
+use ringbuf::{Consumer, Producer, RingBuffer};
 use triple_buffer::{Input, Output, TripleBuffer};
-use ulid::Ulid;
 
+use crate::delay::Delay;
 use crate::engine::{
-    self, Engine, EngineCommand, Plugin, Sequence, Track as EngineTrack, INSTRUMENT_TRACKS,
-    PREVIEW_INSTRUMENTS_CACHE_SIZE,
+    Engine, EngineCommand, Event, Note, Pattern as EnginePattern, Plugin, Track as EngineTrack,
+    TrackParams, MAX_INSTRUMENTS, MAX_NODES, MAX_TRACKS, SCRATCH_BUFFER, TICKS_PER_LINE,
 };
 use crate::files::FileBrowser;
 use crate::params::Params;
-use crate::pattern::{Pattern, Step, StepSize};
-use crate::sampler::{self, Sampler, ROOT_PITCH};
-use std::collections::HashMap;
-use std::sync::Arc;
-
-use std::fmt;
-use std::fmt::Display;
-use std::fmt::Formatter;
-use std::ops::Range;
-use std::sync::atomic::Ordering;
+use crate::pattern::{Pattern, Step, StepSize, NOTE_OFF};
+use crate::sampler::{self, Sampler, Sound};
 
 const MAX_PATTERNS: usize = 999;
 
@@ -32,21 +32,47 @@ pub struct App {
 
     state_buf: Input<AppState>,
     producer: Producer<EngineCommand>,
+    consumer: Consumer<AppCommand>,
     pub file_browser: FileBrowser,
-    params: HashMap<DeviceId, Arc<dyn Params>>,
-    preview_cache: LruCache<Utf8PathBuf, DeviceId>,
-    preview_track_id: TrackId,
-    collector: basedrop::Collector,
+
+    params: HashMap<usize, Arc<dyn Params>>,
+    preview_cache: LruCache<Utf8PathBuf, Arc<Sound>>,
     patterns: HashMap<PatternId, Pattern>,
+
+    pub tracks: Vec<Track>,
+    pub instruments: Vec<Option<Instrument>>,
+
+    node_indices: BitSet,
 }
 
 impl App {
     pub fn send(&mut self, msg: Msg) -> Result<()> {
+        while let Some(cmd) = self.consumer.pop() {
+            match cmd {
+                AppCommand::DropPlugin(node_index, plugin) => {
+                    drop(plugin);
+                    self.node_indices.insert(node_index);
+                }
+            }
+        }
+
         self.dispatch(msg)?;
+        self.recompile_patterns();
         let input_buf = self.state_buf.input_buffer();
         input_buf.clone_from(&self.state);
         self.state_buf.publish();
+
         Ok(())
+    }
+
+    fn get_node_index(&mut self, range: Range<usize>) -> Result<usize> {
+        for n in range {
+            if !self.node_indices.contains(n) {
+                self.node_indices.insert(n);
+                return Ok(n);
+            }
+        }
+        Err(anyhow!("reached max. number of nodes"))
     }
 
     fn dispatch(&mut self, msg: Msg) -> Result<()> {
@@ -62,24 +88,38 @@ impl App {
             LoadSound(idx, path) => {
                 // TODO: keep settings from previous sampler?
                 let snd = sampler::load_file(&path)?;
-                let handle = self.collector.handle();
                 let sampler: Box<dyn Plugin + Send> = Box::new(Sampler::new(snd));
-                let sampler = basedrop::Owned::new(&handle, sampler);
-                let sampler_id = DeviceId::new();
-                self.params.insert(sampler_id, sampler.params());
-
-                let cmd = EngineCommand::CreateInstrument(sampler_id, sampler);
+                let sampler_index = self.get_node_index(MAX_TRACKS..MAX_NODES)?;
+                self.params.insert(sampler_index, sampler.params());
+                let cmd = EngineCommand::CreateNode(sampler_index, sampler);
                 self.send_to_engine(cmd)?;
 
-                if let Some(instr) = &self.state.instruments[idx] {
-                    self.params.remove(&instr.id);
-                    self.send_to_engine(EngineCommand::DeleteInstrument(instr.id))?;
+                if let Some(instr) = &self.instruments[idx] {
+                    self.params.remove(&instr.node_index);
+                    self.send_to_engine(EngineCommand::DeleteNode(instr.node_index))?;
                 }
 
-                self.state.instruments[idx] = Some(Instrument {
-                    id: sampler_id,
+                self.instruments[idx] = Some(Instrument {
+                    node_index: sampler_index,
                     name: path.file_name().unwrap().to_string(),
                 });
+                self.update_node_order();
+            }
+            LoadEffect(idx, effect) => {
+                match effect.as_str() {
+                    "delay" => {
+                        let delay_index = self.get_node_index(MAX_TRACKS..MAX_NODES)?;
+                        let delay: Box<dyn Plugin + Send> = Box::new(Delay::new(44100 / 8));
+                        let cmd = EngineCommand::CreateNode(delay_index, delay);
+                        self.send_to_engine(cmd)?;
+                        self.tracks[idx].effects.push(Device {
+                            node_index: delay_index,
+                            name: String::from("Delay"),
+                        });
+                    }
+                    _ => return Err(anyhow!("unknown effect {effect}")),
+                };
+                self.update_node_order();
             }
             LoopToggle(idx) => {
                 self.state.loop_range = match self.state.loop_range {
@@ -106,30 +146,16 @@ impl App {
                 }
             }
             PreviewSound(path) => {
-                if self.preview_cache.len() >= PREVIEW_INSTRUMENTS_CACHE_SIZE {
-                    if let Some((_, device_id)) = self.preview_cache.pop_lru() {
-                        self.send_to_engine(EngineCommand::DeleteInstrument(device_id))?;
+                let sound = match self.preview_cache.get(&path) {
+                    Some(sound) => sound.clone(),
+                    None => {
+                        let sound = Arc::new(sampler::load_file(&path)?);
+                        self.preview_cache.put(path.clone(), sound.clone());
+                        sound
                     }
-                }
-                let device_id = if let Some(id) = self.preview_cache.get(&path) {
-                    *id
-                } else {
-                    let snd = sampler::load_file(&path)?;
-                    let sampler: Box<dyn Plugin + Send> = Box::new(Sampler::new(snd));
-                    let sampler_id = DeviceId::new();
-                    let handle = self.collector.handle();
-                    self.preview_cache.put(path.clone(), sampler_id);
-                    self.send_to_engine(EngineCommand::CreateInstrument(
-                        sampler_id,
-                        basedrop::Owned::new(&handle, sampler),
-                    ))?;
-                    sampler_id
                 };
-                self.send_to_engine(EngineCommand::PlayNote(
-                    device_id,
-                    self.preview_track_id,
-                    ROOT_PITCH,
-                ))?;
+
+                self.send_to_engine(EngineCommand::PreviewSound(sound))?;
             }
             SelectPattern(idx) => {
                 if idx < self.state.song.len() {
@@ -149,7 +175,7 @@ impl App {
                     let pattern_id = self.state.song.remove(idx);
                     if !self.state.song.contains(&pattern_id) {
                         self.patterns.remove(&pattern_id);
-                        self.state.sequences.remove(&pattern_id);
+                        self.state.patterns.remove(&pattern_id);
                     }
                     if self.state.selected_pattern >= self.state.song.len() {
                         self.state.selected_pattern = self.state.selected_pattern.saturating_sub(1);
@@ -162,21 +188,18 @@ impl App {
                 }
             }
             UpdatePattern(id, pattern) => {
-                self.state.sequences.insert(id, pattern.compile());
                 self.patterns.insert(id, pattern);
             }
             CreatePattern(idx) => {
-                if self.state.sequences.len() < MAX_PATTERNS {
+                if self.state.patterns.len() < MAX_PATTERNS {
                     let id = self.next_pattern_id();
                     let num_instruments = self
-                        .state
                         .tracks
                         .iter()
                         .filter(|track| matches!(track.track_type, TrackType::Instrument))
                         .count();
 
                     let pattern = Pattern::new(num_instruments);
-                    self.state.sequences.insert(id, pattern.compile());
                     self.patterns.insert(id, pattern);
                     if let Some(idx) = idx {
                         self.state.song.insert(idx + 1, id);
@@ -195,42 +218,90 @@ impl App {
                 let mut p2 = p1.clone();
                 p2.color = random_color();
                 let new_id = self.next_pattern_id();
-                self.state.sequences.insert(new_id, p2.compile());
                 self.patterns.insert(new_id, p2);
                 self.state.song.insert(idx + 1, new_id);
             }
             ChangeDir(dir) => self.file_browser.move_to(dir)?,
-            CreateTrack(idx) => {
-                let track = EngineTrack::new();
-                let rms = track.rms_out.clone();
-                let track_info = Track::new(rms);
-                self.params.insert(track_info.device_id, track.params());
+            CreateTrack(idx, output_index, track_type, name) => {
+                let node_index = self.get_node_index(0..MAX_TRACKS)?;
+                let engine_track = EngineTrack::new();
+                let track = Track::new(
+                    node_index,
+                    output_index,
+                    track_type,
+                    name,
+                    engine_track.rms_out.clone(),
+                );
+                self.params.insert(node_index, engine_track.params());
 
-                let cmd = EngineCommand::CreateTrack(track_info.id, Box::new(track));
+                if idx > self.tracks.len() {
+                    self.tracks.push(track);
+                } else {
+                    self.tracks.insert(idx, track)
+                }
+
+                if matches!(track_type, TrackType::Instrument) {
+                    for pattern in &mut self.patterns.values_mut() {
+                        pattern.add_track(idx);
+                    }
+                }
+
+                let engine_track: Box<dyn Plugin + Send> = Box::new(engine_track);
+                let cmd = EngineCommand::CreateNode(node_index, engine_track);
                 self.send_to_engine(cmd)?;
-                self.state.tracks.insert(idx, track_info);
+                self.update_node_order();
             }
-            ParamInc(device_id, param_idx, step_size) => {
-                self.params(device_id).get_param(param_idx).incr(step_size);
+            DeleteTrack(idx) => {
+                self.tracks.remove(idx);
+                for pattern in &mut self.patterns.values_mut() {
+                    pattern.delete_track(idx);
+                }
+                self.update_node_order();
             }
-            ParamDec(device_id, param_idx, step_size) => {
-                self.params(device_id).get_param(param_idx).decr(step_size);
+            RenameTrack(idx, name) => {
+                self.tracks[idx].name = name;
             }
-            ParamToggle(device_id, param_idx) => {
-                self.params(device_id).get_param(param_idx).toggle();
+            ParamInc(node_index, param_idx, step_size) => {
+                self.params(node_index).get_param(param_idx).incr(step_size);
+            }
+            ParamDec(node_index, param_idx, step_size) => {
+                self.params(node_index).get_param(param_idx).decr(step_size);
+            }
+            DeleteInstrument(idx) => {
+                if let Some(instr) = &self.instruments[idx] {
+                    self.params.remove(&instr.node_index);
+                    self.send_to_engine(EngineCommand::DeleteNode(instr.node_index))?;
+                }
+                self.instruments[idx] = None;
+            }
+            ToggleMute(track_idx) => {
+                let idx = self.tracks[track_idx].node_index;
+                self.params(idx).get_param(TrackParams::MUTE).toggle();
+            }
+            TrackVolumeIncr(track_idx) => {
+                let idx = self.tracks[track_idx].node_index;
+                self.params(idx)
+                    .get_param(TrackParams::VOLUME)
+                    .incr(StepSize::Large);
+            }
+            TrackVolumeDecr(track_idx) => {
+                let idx = self.tracks[track_idx].node_index;
+                self.params(idx)
+                    .get_param(TrackParams::VOLUME)
+                    .decr(StepSize::Large);
             }
         }
 
         Ok(())
     }
 
-    pub fn params(&self, id: DeviceId) -> &Arc<dyn Params> {
-        self.params.get(&id).unwrap()
+    pub fn params(&self, node_index: usize) -> &Arc<dyn Params> {
+        self.params.get(&node_index).unwrap()
     }
 
-    pub fn update_pattern<F>(&self, f: F) -> Msg
+    pub fn update_pattern<F>(&self, mut f: F) -> Msg
     where
-        F: Fn(&mut Pattern),
+        F: FnMut(&mut Pattern),
     {
         let mut pattern = self.selected_pattern().clone();
         f(&mut pattern);
@@ -240,11 +311,11 @@ impl App {
     }
 
     fn next_pattern_id(&self) -> PatternId {
-        if self.state.sequences.is_empty() {
+        if self.state.patterns.is_empty() {
             return PatternId(0);
         }
         let mut max = 0;
-        for id in self.state.sequences.keys() {
+        for id in self.state.patterns.keys() {
             if id.0 > max {
                 max = id.0;
             }
@@ -257,6 +328,15 @@ impl App {
             return Err(anyhow!("unable to send message to engine"));
         }
         Ok(())
+    }
+
+    fn recompile_patterns(&mut self) {
+        for (id, pattern) in &mut self.patterns {
+            self.state.patterns.insert(
+                *id,
+                compile_pattern(&self.tracks, &self.instruments, pattern),
+            );
+        }
     }
 
     pub fn song_iter(&self) -> impl Iterator<Item = &Pattern> {
@@ -276,12 +356,73 @@ impl App {
         let steps = pattern.steps(track_idx);
         &steps[range.start..range.end]
     }
+
+    fn update_node_order(&mut self) {
+        let mut entries = Vec::new();
+
+        for instr in &self.instruments {
+            let Some(instr) = instr else { continue };
+            entries.push(NodeEntry::new(instr.node_index, None));
+        }
+
+        for track in &self.tracks {
+            let mut input = track.node_index;
+            let mut output = SCRATCH_BUFFER;
+
+            for effect in &track.effects {
+                let entry = NodeEntry::new(effect.node_index, Some((input, output)));
+                entries.push(entry);
+                (input, output) = (output, input);
+            }
+
+            let entry = NodeEntry::new(track.node_index, Some((input, track.output_node_index)));
+            entries.push(entry);
+        }
+
+        self.state.node_order = entries;
+    }
+}
+
+fn compile_pattern(
+    tracks: &[Track],
+    instruments: &[Option<Instrument>],
+    pattern: &Pattern,
+) -> EnginePattern {
+    let mut events = Vec::new();
+    for (i, track) in pattern.tracks.iter().enumerate() {
+        let mut pattern_offset = 0;
+        for step in &track.steps {
+            let offset = u8::min(TICKS_PER_LINE as u8 - 1, step.offset().unwrap_or(0));
+            let note_offset = pattern_offset + offset as usize;
+            let instr_idx = step.instrument().unwrap_or(i as u8) as usize;
+            let Some(instr) = &instruments[instr_idx] else {
+                continue;
+            };
+            let track_idx = tracks[i].node_index;
+            let velocity = step.velocity();
+            for pitch in step.notes() {
+                let note = if pitch == NOTE_OFF {
+                    Note::Off
+                } else {
+                    Note::On(pitch, velocity)
+                };
+                let note = Event::new(note, note_offset, track_idx, instr.node_index);
+                events.push(note);
+            }
+            pattern_offset += TICKS_PER_LINE;
+        }
+    }
+    events.sort_by(|a, b| a.offset.cmp(&b.offset));
+    EnginePattern {
+        length: pattern.len() * TICKS_PER_LINE,
+        events,
+    }
 }
 
 #[derive(Clone, Default)]
 pub struct EngineState {
     pub current_tick: usize,
-    pub current_sequence: usize,
+    pub current_pattern: usize,
 }
 
 impl EngineState {
@@ -290,10 +431,14 @@ impl EngineState {
     }
 }
 
+pub enum AppCommand {
+    DropPlugin(usize, Box<dyn Plugin + Send>),
+}
+
 #[derive(Clone)]
 pub struct Instrument {
     pub name: String,
-    pub id: DeviceId,
+    pub node_index: usize,
 }
 
 #[derive(Clone)]
@@ -303,19 +448,18 @@ pub struct AppState {
     pub octave: u16,
     pub is_playing: bool,
     pub selected_pattern: usize,
-    pub sequences: HashMap<PatternId, Sequence>,
+    pub patterns: HashMap<PatternId, EnginePattern>,
     pub song: Vec<PatternId>,
     pub loop_range: Option<(usize, usize)>,
-    pub instruments: Vec<Option<Instrument>>,
-    pub tracks: Vec<Track>,
+    pub node_order: Vec<NodeEntry>,
 }
 
 impl AppState {
-    pub fn sequence(&self, idx: usize) -> Option<&Sequence> {
-        self.song.get(idx).and_then(|id| self.sequences.get(id))
+    pub fn pattern(&self, idx: usize) -> Option<&EnginePattern> {
+        self.song.get(idx).and_then(|id| self.patterns.get(id))
     }
 
-    pub fn next_sequence(&self, current: usize) -> usize {
+    pub fn next_pattern(&self, current: usize) -> usize {
         let (start, end) = match self.loop_range {
             Some(range) => range,
             None => (0, self.song.len() - 1),
@@ -338,22 +482,28 @@ impl AppState {
 
 #[derive(Clone)]
 pub struct Track {
-    pub id: TrackId,
-    pub device_id: DeviceId,
+    pub node_index: usize,
+    pub output_node_index: usize,
     pub effects: Vec<Device>,
     pub track_type: TrackType,
     pub name: Option<String>,
-    pub rms: Arc<[AtomicF64; 2]>,
+    rms: Arc<[AtomicF64; 2]>,
 }
 
 impl Track {
-    fn new(rms: Arc<[AtomicF64; 2]>) -> Self {
+    fn new(
+        node_index: usize,
+        output_node_index: usize,
+        track_type: TrackType,
+        name: Option<String>,
+        rms: Arc<[AtomicF64; 2]>,
+    ) -> Self {
         Self {
-            id: TrackId::new(),
-            device_id: DeviceId::new(),
+            node_index,
+            output_node_index,
             effects: vec![],
-            track_type: TrackType::Instrument,
-            name: None,
+            track_type,
+            name,
             rms,
         }
     }
@@ -372,7 +522,7 @@ impl Track {
 
 #[derive(Clone)]
 pub struct Device {
-    pub id: DeviceId,
+    pub node_index: usize,
     pub name: String,
 }
 
@@ -384,66 +534,52 @@ pub enum TrackType {
 
 pub fn new() -> Result<(App, Output<AppState>, Engine, Output<EngineState>)> {
     let engine_state = EngineState {
-        current_sequence: 0,
+        current_pattern: 0,
         current_tick: 0,
     };
 
-    let mut app_state = AppState {
+    let app_state = AppState {
         bpm: 120,
         lines_per_beat: 4,
         octave: 4,
         is_playing: false,
-        sequences: HashMap::new(),
+        patterns: HashMap::new(),
         song: Vec::new(),
         selected_pattern: 0,
         loop_range: Some((0, 0)),
-        instruments: vec![None; INSTRUMENT_TRACKS],
-        tracks: Vec::new(),
+        node_order: Vec::new(),
     };
-
-    let preview_track_id = TrackId::new();
 
     // Triple buffers are used to share app state with the engine and vice versa. This should
     // ensure that both threads always have a coherent view of the other thread's state.
     let (app_state_input, app_state_output) = TripleBuffer::new(&app_state).split();
     let (engine_state_input, engine_state_output) = TripleBuffer::new(&engine_state).split();
 
-    let mut device_params = HashMap::new();
+    let params = HashMap::new();
+    let node_indices = BitSet::with_capacity(MAX_NODES);
 
-    // Create master track
-    let master = engine::Track::new();
-    let rms = master.rms_out.clone();
-    let mut track = Track::new(rms);
-    device_params.insert(track.device_id, master.params());
+    let (eng_producer, eng_consumer) = RingBuffer::<EngineCommand>::new(64).split();
+    let (app_producer, app_consumer) = RingBuffer::<AppCommand>::new(64).split();
 
-    track.name = Some(String::from("Master"));
-    track.track_type = TrackType::Bus;
-    app_state.tracks.push(track);
+    let engine = Engine::new(engine_state, engine_state_input, eng_consumer, app_producer);
 
-    let (producer, consumer) = RingBuffer::<EngineCommand>::new(64).split();
-    let engine = Engine::new(
-        engine_state,
-        engine_state_input,
-        consumer,
-        master,
-        preview_track_id,
-    );
-
-    // We'll manage size manually so we can delete devices in the engine on eviction
-    let preview_cache = LruCache::unbounded();
+    let preview_cache = LruCache::new(NonZeroUsize::new(64).unwrap());
 
     let app = App {
         state: app_state,
         state_buf: app_state_input,
-        producer,
+        producer: eng_producer,
+        consumer: app_consumer,
         file_browser: FileBrowser::with_path("./sounds")?,
-        params: device_params,
-        preview_track_id,
+        params,
         preview_cache,
-        collector: basedrop::Collector::new(),
         engine_state: EngineState::default(),
         patterns: HashMap::new(),
+        node_indices,
+        tracks: Vec::new(),
+        instruments: vec![None; MAX_INSTRUMENTS],
     };
+
     Ok((app, app_state_output, engine, engine_state_output))
 }
 
@@ -452,6 +588,8 @@ pub enum Msg {
     Exit,
     TogglePlay,
     LoadSound(usize, Utf8PathBuf),
+    LoadEffect(usize, String),
+    DeleteInstrument(usize),
     PreviewSound(Utf8PathBuf),
     LoopAdd(usize),
     LoopToggle(usize),
@@ -466,10 +604,14 @@ pub enum Msg {
     ChangeDir(Utf8PathBuf),
     SetBpm(u16),
     SetOct(u16),
-    CreateTrack(usize),
-    ParamInc(DeviceId, usize, StepSize),
-    ParamDec(DeviceId, usize, StepSize),
-    ParamToggle(DeviceId, usize),
+    CreateTrack(usize, usize, TrackType, Option<String>),
+    DeleteTrack(usize),
+    RenameTrack(usize, Option<String>),
+    ParamInc(usize, usize, StepSize),
+    ParamDec(usize, usize, StepSize),
+    ToggleMute(usize),
+    TrackVolumeIncr(usize),
+    TrackVolumeDecr(usize),
 }
 
 impl Msg {
@@ -487,27 +629,24 @@ impl Display for PatternId {
     }
 }
 
-#[derive(Clone, Copy, Hash, PartialEq, Eq, Debug, Default)]
-pub struct DeviceId(Ulid);
-
-impl DeviceId {
-    pub fn new() -> Self {
-        Self(Ulid::new())
-    }
-}
-
-#[derive(Clone, Copy, Hash, PartialEq, Eq, Debug, Default)]
-pub struct TrackId(Ulid);
-
-impl TrackId {
-    pub fn new() -> Self {
-        Self(Ulid::new())
-    }
-}
-
 pub fn random_color() -> Color {
     let r = rand::random::<u8>();
     let g = rand::random::<u8>();
     let b = rand::random::<u8>();
     Color::Rgb(r, g, b)
+}
+
+#[derive(Clone)]
+pub struct NodeEntry {
+    pub node_index: usize,
+    pub buffers: Option<(usize, usize)>,
+}
+
+impl NodeEntry {
+    fn new(node_index: usize, buffers: Option<(usize, usize)>) -> Self {
+        Self {
+            node_index,
+            buffers,
+        }
+    }
 }

@@ -3,3 +3,4 @@
 /.vscode
 /debug.log
 .DS_Store
+/tests/output

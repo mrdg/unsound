@@ -5,8 +5,8 @@ use ratatui::{
     widgets::ListState,
 };
 
-use crate::app::{App, Msg};
-use crate::engine::TrackParams;
+use crate::app::{App, Msg, TrackType};
+use crate::engine::MASTER_TRACK;
 use crate::pattern::{Selection, StepSize, INPUTS_PER_STEP};
 use crate::sampler;
 use crate::view::{Focus, ProjectTreeState, View};
@@ -131,24 +131,15 @@ fn handle_editor_input(app: &App, view: &mut View, key: KeyEvent) -> Result<Msg>
 
     match key.code {
         KeyCode::Char('m') if key.modifiers.contains(KeyModifiers::ALT) => {
-            let track = &app.state.tracks[view.editor.cursor.track()];
-            return Ok(ParamToggle(track.device_id, TrackParams::MUTE));
+            return Ok(ToggleMute(view.editor.cursor.track()));
         }
         KeyCode::Char('=') if key.modifiers.contains(KeyModifiers::ALT) => {
-            let track = &app.state.tracks[view.editor.cursor.track()];
-            return Ok(ParamInc(
-                track.device_id,
-                TrackParams::VOLUME,
-                StepSize::Large,
-            ));
+            let track = view.editor.cursor.track();
+            return Ok(TrackVolumeIncr(track));
         }
         KeyCode::Char('-') if key.modifiers.contains(KeyModifiers::ALT) => {
-            let track = &app.state.tracks[view.editor.cursor.track()];
-            return Ok(ParamDec(
-                track.device_id,
-                TrackParams::VOLUME,
-                StepSize::Large,
-            ));
+            let track = view.editor.cursor.track();
+            return Ok(TrackVolumeDecr(track));
         }
         KeyCode::Char('v') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             let pos = view.editor.cursor;
@@ -262,6 +253,19 @@ fn handle_command_line_input(app: &App, view: &mut View, key: KeyEvent) -> Resul
                         }
                     }
                 }
+                "delete-track" => {
+                    let idx = view.editor.cursor.track();
+                    Ok(DeleteTrack(idx))
+                }
+                "create-track" => {
+                    let idx = view.editor.cursor.track();
+                    Ok(CreateTrack(idx, MASTER_TRACK, TrackType::Instrument, None))
+                }
+                "rename-track" => {
+                    let idx = view.editor.cursor.track();
+                    let name = parts.get(1).map(|str| String::from(*str));
+                    Ok(RenameTrack(idx, name))
+                }
                 _ => Err(anyhow!("invalid command {}", parts[0])),
             };
             view.command.clear();
@@ -306,35 +310,35 @@ fn handle_project_tree_input(app: &App, view: &mut View, key: KeyEvent) -> Resul
             };
         }
         ProjectTreeState::InstrumentParams(instr_idx) => {
-            let device_id = app.state.instruments[instr_idx].as_ref().unwrap().id;
+            let node_idx = app.instruments[instr_idx].as_ref().unwrap().node_index;
             match key.code {
                 KeyCode::Char('u') => {
                     view.project_tree_state = ProjectTreeState::Instruments;
                 }
                 KeyCode::Char('[') => {
                     return Ok(ParamInc(
-                        device_id,
+                        node_idx,
                         view.params.selected().unwrap(),
                         StepSize::Default,
                     ))
                 }
                 KeyCode::Char(']') => {
                     return Ok(ParamDec(
-                        device_id,
+                        node_idx,
                         view.params.selected().unwrap(),
                         StepSize::Default,
                     ))
                 }
                 KeyCode::Char('{') => {
                     return Ok(ParamInc(
-                        device_id,
+                        node_idx,
                         view.params.selected().unwrap(),
                         StepSize::Large,
                     ))
                 }
                 KeyCode::Char('}') => {
                     return Ok(ParamDec(
-                        device_id,
+                        node_idx,
                         view.params.selected().unwrap(),
                         StepSize::Large,
                     ))
@@ -354,11 +358,15 @@ fn handle_project_tree_input(app: &App, view: &mut View, key: KeyEvent) -> Resul
             match key.code {
                 KeyCode::Enter => {
                     let idx = view.instruments.selected().unwrap();
-                    if app.state.instruments[idx].is_some() {
+                    if app.instruments[idx].is_some() {
                         view.project_tree_state = ProjectTreeState::InstrumentParams(idx);
                     }
                 }
                 KeyCode::Char('l') => view.focus = Focus::FileLoader,
+                KeyCode::Backspace => {
+                    let idx = view.instruments.selected().unwrap();
+                    return Ok(DeleteInstrument(idx));
+                }
                 _ => handle_list_input(&mut view.instruments, key),
             };
         }

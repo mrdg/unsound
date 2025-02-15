@@ -23,11 +23,11 @@ assert_no_alloc = { git = "https://github.com/Windfisch/rust-assert-no-alloc", f
 triple_buffer = "6.0.0"
 rand = "0.8.5"
 atomic_float = "0.1.0"
-ulid = "1.0.0"
 lru = "0.8.1"
-basedrop = "0.1.2"
 ratatui = "0.29.0"
 crossterm = "0.28.1"
+get-many-mut = "0.1.0"
+bit-set = "0.8.0"
 
 [features]
 

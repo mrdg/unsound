@@ -1,16 +1,5 @@
 extern crate anyhow;
 
-mod app;
-mod audio;
-mod engine;
-mod env;
-mod files;
-mod input;
-mod params;
-mod pattern;
-mod sampler;
-mod view;
-
 use std::{
     sync::mpsc::{self, Receiver},
     thread,
@@ -25,23 +14,15 @@ use ratatui::crossterm::event::{self, Event, KeyEventKind};
 use ratatui::DefaultTerminal;
 use triple_buffer::Output;
 
-use crate::app::{App, AppState, EngineState, Msg};
-use crate::audio::Stereo;
-use crate::engine::{Engine, INSTRUMENT_TRACKS};
-use crate::view::View;
+use unsound::app::{self, App, AppState, EngineState, Msg, TrackType};
+use unsound::audio::Stereo;
+use unsound::engine::{Engine, MAIN_OUTPUT, MASTER_TRACK};
+use unsound::input;
+use unsound::view::{self, View};
 
 #[cfg(debug_assertions)]
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
-
-// Keep https://github.com/RustAudio/cpal/issues/508 in mind
-// when changing the sample rate.
-const SAMPLE_RATE: f64 = 44100.0;
-const FRAMES_PER_BUFFER: usize = 128;
-
-// Allocate a larger buffer size, because sometimes cpal requests more than the
-// configured buffer size when switching the output device.
-const INTERNAL_BUFFER_SIZE: usize = 4 * FRAMES_PER_BUFFER;
 
 fn main() {
     match run() {
@@ -55,7 +36,12 @@ fn main() {
 fn run() -> Result<()> {
     let (mut app, app_state, engine, engine_state) = app::new()?;
 
-    let num_tracks = INSTRUMENT_TRACKS;
+    app.send(Msg::CreateTrack(
+        MASTER_TRACK,
+        MAIN_OUTPUT,
+        TrackType::Bus,
+        Some(String::from("Master")),
+    ))?;
 
     // Load some default sounds for easier testing
     let sounds = [
@@ -66,12 +52,17 @@ fn run() -> Result<()> {
         "sounds/chord.wav",
         "sounds/bass.wav",
     ];
-    for i in 0..num_tracks {
-        app.send(Msg::CreateTrack(i))?;
-        if i < sounds.len() {
-            app.send(Msg::LoadSound(i, Utf8PathBuf::from(sounds[i])))?;
-        }
+    for (i, sound) in sounds.iter().enumerate() {
+        app.send(Msg::CreateTrack(
+            i,
+            MASTER_TRACK,
+            TrackType::Instrument,
+            None,
+        ))?;
+        app.send(Msg::LoadSound(i, Utf8PathBuf::from(sound)))?;
     }
+    app.send(Msg::LoadEffect(3, "delay".to_string()))?;
+
     for _ in 0..8 {
         app.send(Msg::CreatePattern(None))?
     }
@@ -93,11 +84,11 @@ fn run_audio(mut app_state: Output<AppState>, mut engine: Engine) -> Result<cpal
         .ok_or_else(|| anyhow!("can't find output device"))?;
 
     let mut config = device.default_output_config()?.config();
-    config.sample_rate = cpal::SampleRate(SAMPLE_RATE as u32);
-    config.buffer_size = cpal::BufferSize::Fixed(FRAMES_PER_BUFFER as u32);
+    config.sample_rate = cpal::SampleRate(unsound::SAMPLE_RATE as u32);
+    config.buffer_size = cpal::BufferSize::Fixed(unsound::FRAMES_PER_BUFFER as u32);
     config.channels = 2;
 
-    let mut buf = [Stereo::ZERO; INTERNAL_BUFFER_SIZE];
+    let mut buf = [Stereo::ZERO; unsound::INTERNAL_BUFFER_SIZE];
     let stream = device.build_output_stream(
         &config,
         move |output: &mut [f32], _: &cpal::OutputCallbackInfo| {

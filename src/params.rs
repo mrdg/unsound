@@ -38,7 +38,7 @@ impl Param {
         self.set(new);
     }
 
-    fn set(&self, value: f64) {
+    pub fn set(&self, value: f64) {
         if value >= self.info.min && value <= self.info.max {
             self.target.store(value, Ordering::Relaxed);
         }

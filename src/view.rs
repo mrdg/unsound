@@ -171,7 +171,7 @@ fn render_patterns(app: &App, view: &mut View, f: &mut Frame, area: Rect) {
         .enumerate()
         .map(|(i, pattern)| {
             let looped = if app.state.loop_contains(i) { "~" } else { " " };
-            let play_indicator = if i == app.engine_state.current_sequence {
+            let play_indicator = if i == app.engine_state.current_pattern {
                 let style = Style::default().fg(Color::Blue);
                 if app.state.is_playing {
                     animate(
@@ -205,7 +205,7 @@ fn render_patterns(app: &App, view: &mut View, f: &mut Frame, area: Rect) {
 fn render_status_line(app: &App, _view: &mut View, f: &mut Frame, area: Rect) {
     let playback_position = format!(
         " [ {:0width$} . {:0width$} ] ",
-        app.engine_state.current_sequence,
+        app.engine_state.current_pattern,
         app.engine_state.current_line(),
         width = 3
     );
@@ -228,7 +228,6 @@ fn render_project_tree(app: &App, view: &mut View, f: &mut Frame, area: Rect) {
     match view.project_tree_state {
         ProjectTreeState::Tracks => {
             let tracks: Vec<ListItem> = app
-                .state
                 .tracks
                 .iter()
                 .enumerate()
@@ -252,7 +251,7 @@ fn render_project_tree(app: &App, view: &mut View, f: &mut Frame, area: Rect) {
             f.render_stateful_widget(tracks, area, &mut view.tracks);
         }
         ProjectTreeState::Devices(track_idx) => {
-            let track = &app.state.tracks[track_idx];
+            let track = &app.tracks[track_idx];
             let devices = &track.effects;
             let devices: Vec<ListItem> = devices
                 .iter()
@@ -277,8 +276,8 @@ fn render_project_tree(app: &App, view: &mut View, f: &mut Frame, area: Rect) {
             f.render_stateful_widget(devices, area, &mut view.devices);
         }
         ProjectTreeState::InstrumentParams(instrument_idx) => {
-            let instrument = app.state.instruments[instrument_idx].as_ref().unwrap();
-            let params = app.params(instrument.id);
+            let instrument = app.instruments[instrument_idx].as_ref().unwrap();
+            let params = app.params(instrument.node_index);
 
             // TODO: maybe use a table here to align values?
             let w = (area.width as f32 * 0.6) as usize;
@@ -309,12 +308,11 @@ fn render_project_tree(app: &App, view: &mut View, f: &mut Frame, area: Rect) {
         }
         ProjectTreeState::Instruments => {
             let instruments: Vec<ListItem> = app
-                .state
                 .instruments
                 .iter()
                 .enumerate()
                 .map(|(i, instr)| {
-                    let is_selected = view.instruments.selected().map_or(false, |n| n == i);
+                    let is_selected = view.instruments.selected() == Some(i);
                     let selected = if is_selected && view.focus != Focus::ProjectTree {
                         Span::raw(">")
                     } else {

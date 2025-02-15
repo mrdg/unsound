@@ -1,6 +1,5 @@
-use crate::app::TrackId;
 use crate::audio::{Buffer, Frame, Stereo};
-use crate::engine::{Event, Note, Plugin, ProcessContext, ProcessStatus};
+use crate::engine::{Note, Plugin, PluginEvent, ProcessContext, ProcessStatus};
 use crate::env::{Envelope, State as EnvelopeState};
 use crate::params::{self, format_millis, Param, ParamInfo, Params};
 use crate::SAMPLE_RATE;
@@ -80,7 +79,7 @@ pub struct Voice {
 #[derive(PartialEq, Eq, Debug)]
 pub enum VoiceState {
     Free,
-    Busy(TrackId),
+    Busy(usize),
 }
 
 impl Voice {
@@ -99,21 +98,26 @@ impl Voice {
         }
     }
 
-    fn process(&mut self, buf: &mut [Stereo]) -> ProcessStatus {
+    fn process(
+        &mut self,
+        ctx: &mut ProcessContext,
+        track_id: usize,
+        rng: &Range<usize>,
+    ) -> ProcessStatus {
         let sample = self.sample.as_ref();
         self.env.update(self.params.adsr());
 
-        for dst_frame in buf.iter_mut() {
+        for mut frame in ctx.output(track_id, rng) {
             let pos = self.position as usize;
             let weight = self.position - pos as f32;
             let inverse_weight = 1.0 - weight;
 
-            let mut frame = sample[pos] * inverse_weight;
+            let mut output = sample[pos] * inverse_weight;
             if pos < sample.len() - 1 {
-                frame += sample[pos + 1] * weight;
+                output += sample[pos + 1] * weight;
             }
 
-            *dst_frame += frame * self.velocity * self.env.value(self.gate) as f32;
+            frame.write(output * self.velocity * self.env.value(self.gate) as f32);
             self.position += self.pitch_ratio;
             if self.position >= sample.len() as f32 {
                 self.state = VoiceState::Free;
@@ -140,6 +144,15 @@ pub struct Sound {
 }
 
 impl Sound {
+    pub fn silence() -> Self {
+        let zero = [Stereo::ZERO; 128];
+        Self {
+            buf: Arc::new(zero.to_vec()),
+            offset: 0,
+            sample_rate: crate::SAMPLE_RATE as usize,
+        }
+    }
+
     fn new(buf: Buffer, offset: usize, sample_rate: usize) -> Self {
         Self {
             buf: Arc::new(buf),
@@ -189,8 +202,8 @@ pub fn load_file(path: &Utf8PathBuf) -> Result<Sound> {
 
 pub struct Sampler {
     voices: Vec<Voice>,
-    events: Vec<Event>,
-    sound: Sound,
+    events: Vec<PluginEvent>,
+    sound: Arc<Sound>,
     params: Arc<SamplerParams>,
 }
 
@@ -204,15 +217,22 @@ impl Sampler {
         Self {
             voices,
             events: Vec::with_capacity(64),
-            sound,
+            sound: sound.into(),
             params,
         }
     }
 
-    fn note_on(&mut self, track_id: TrackId, pitch: u8, velocity: u8) {
+    pub fn load(&mut self, sound: Arc<Sound>) {
+        self.sound = sound;
+    }
+
+    fn note_on(&mut self, track_idx: usize, pitch: u8, velocity: u8) {
         if let Some(voice) = self.voices.iter_mut().find(|v| v.state == VoiceState::Free) {
+            // TODO: ensure that voices don't hold on to samples for too long?
+            voice.sample = self.sound.buf.clone();
+
             voice.gate = 1.0;
-            voice.state = VoiceState::Busy(track_id);
+            voice.state = VoiceState::Busy(track_idx);
             voice.env = Envelope::new(self.params.adsr());
             voice.pitch = pitch;
             voice.velocity =
@@ -227,13 +247,13 @@ impl Sampler {
         }
     }
 
-    fn send_event(&mut self, ev: &Event) {
+    fn send_event(&mut self, ev: &PluginEvent) {
         match ev.note {
-            Note::On(pitch, velocity) => self.note_on(ev.track_id, pitch, velocity),
+            Note::On(pitch, velocity) => self.note_on(ev.track_idx, pitch, velocity),
             Note::Off => {
                 for voice in &mut self.voices.iter_mut() {
-                    if let VoiceState::Busy(track_id) = voice.state {
-                        if track_id == ev.track_id {
+                    if let VoiceState::Busy(track_idx) = voice.state {
+                        if track_idx == ev.track_idx {
                             voice.note_off();
                         }
                     }
@@ -246,8 +266,7 @@ impl Sampler {
         let mut status = ProcessStatus::Idle;
         for voice in &mut self.voices.iter_mut() {
             if let VoiceState::Busy(track_id) = voice.state {
-                let buf = ctx.track_buffer(track_id, range);
-                let voice_status = voice.process(buf);
+                let voice_status = voice.process(ctx, track_id, range);
                 if let ProcessStatus::Continue = voice_status {
                     status = voice_status
                 }
@@ -283,7 +302,7 @@ impl Plugin for Sampler {
         self.params.clone()
     }
 
-    fn send_event(&mut self, event: Event) {
+    fn send_event(&mut self, event: PluginEvent) {
         self.events.push(event);
     }
 }
@@ -293,48 +312,46 @@ fn map(v: f64, from: (f64, f64), to: (f64, f64)) -> f64 {
 }
 
 pub fn can_load_file(path: &Utf8PathBuf) -> bool {
-    path.extension().map_or(false, |ext| ext == "wav")
+    path.extension() == Some("wav")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::{Note, Track};
-    use std::collections::HashMap;
+    use crate::audio;
+    use crate::engine::Note;
 
     #[test]
     fn sampler_process() {
-        let mut tracks = HashMap::new();
-        let track1 = TrackId::new();
-        let track2 = TrackId::new();
+        let mut buffers = Vec::new();
+        let track1 = 0;
+        let track2 = 1;
 
-        tracks.insert(track1, Box::new(Track::default()));
-        tracks.insert(track2, Box::new(Track::default()));
+        buffers.push(audio::buffer());
+        buffers.push(audio::buffer());
         let sample = Stereo::new([0.5, 0.5]);
 
         let sound = Sound::new(vec![sample; 16], 0, 44100);
         let mut sampler = Sampler::new(sound);
         let note = Note::On(ROOT_PITCH, 127);
 
-        let ev = Event::new(8, track1, note);
+        let ev = PluginEvent::new(8, track1, note);
         Plugin::send_event(&mut sampler, ev);
 
-        let ev = Event::new(16, track2, note);
+        let ev = PluginEvent::new(16, track2, note);
         Plugin::send_event(&mut sampler, ev);
 
         let buf_size = 32;
-        let mut ctx = ProcessContext::new(&mut tracks, buf_size);
+        let mut ctx = ProcessContext::new(&mut buffers, buf_size);
         sampler.process(&mut ctx);
 
-        let buf = ctx.track_buffer(track1, &(0..buf_size));
-        assert_eq!(vec![Stereo::ZERO; 8], buf[0..8]);
+        assert_eq!(vec![Stereo::ZERO; 8], buffers[track1][0..8]);
         // TODO: check for the actual sample value here, but easier if we can disable
         // envelope.
-        assert_ne!(vec![Stereo::ZERO; 16], buf[8..24]);
-        assert_eq!(vec![Stereo::ZERO; 8], buf[24..32]);
+        assert_ne!(vec![Stereo::ZERO; 16], buffers[track1][8..24]);
+        assert_eq!(vec![Stereo::ZERO; 8], buffers[track1][24..32]);
 
-        let buf = ctx.track_buffer(track2, &(0..buf_size));
-        assert_eq!(vec![Stereo::ZERO; 16], buf[0..16]);
-        assert_ne!(vec![Stereo::ZERO; 16], buf[16..32]);
+        assert_eq!(vec![Stereo::ZERO; 16], buffers[track2][0..16]);
+        assert_ne!(vec![Stereo::ZERO; 16], buffers[track2][16..32]);
     }
 }

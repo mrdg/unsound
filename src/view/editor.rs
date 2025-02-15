@@ -136,7 +136,7 @@ pub fn render(app: &App, view: &mut View, area: Rect, buf: &mut Buffer) {
         render_mixer_controls(app, track, buf, inner, idx);
     };
 
-    for (idx, track) in app.state.tracks.iter().enumerate() {
+    for (idx, track) in app.tracks.iter().enumerate() {
         if track.is_bus() {
             continue;
         }
@@ -147,8 +147,8 @@ pub fn render(app: &App, view: &mut View, area: Rect, buf: &mut Buffer) {
     }
 
     // Master track sticks to the right of the editor area
-    let master_track = app.state.tracks.last().unwrap();
-    let master_idx = app.state.tracks.len() - 1;
+    let master_track = app.tracks.last().unwrap();
+    let master_idx = app.tracks.len() - 1;
     render_track(
         area.x + (area.width - BUS_TRACK_WIDTH),
         BUS_TRACK_WIDTH,
@@ -213,7 +213,7 @@ fn render_mixer_controls(app: &App, track: &Track, buf: &mut Buffer, area: Rect,
         height: 2,
     };
 
-    let volume = app.params(track.device_id).get_param(TrackParams::VOLUME);
+    let volume = app.params(track.node_index).get_param(TrackParams::VOLUME);
     let block = Block::default()
         .borders(Borders::TOP)
         .border_style(Style::default().fg(BORDER_COLOR));
@@ -234,7 +234,7 @@ fn render_mixer_controls(app: &App, track: &Track, buf: &mut Buffer, area: Rect,
         return;
     }
 
-    let muted = app.params(track.device_id).get_param(TrackParams::MUTE);
+    let muted = app.params(track.node_index).get_param(TrackParams::MUTE);
     let button_style = if muted.as_bool() {
         Style::default().bg(Color::DarkGray)
     } else {
@@ -295,7 +295,7 @@ fn render_track_steps(
             let selected = view
                 .selection
                 .as_ref()
-                .map_or(false, |s| s.contains(line, column + offset));
+                .is_some_and(|s| s.contains(line, column + offset));
 
             if matches!(view.focus, Focus::Editor)
                 && view.editor.cursor.line == line
@@ -336,7 +336,7 @@ fn render_track_steps(
 }
 
 fn is_current_line(app: &App, line: usize) -> bool {
-    if app.state.selected_pattern != app.engine_state.current_sequence {
+    if app.state.selected_pattern != app.engine_state.current_pattern {
         false
     } else {
         app.engine_state.current_line() == line
