@@ -40,7 +40,7 @@ pub struct App {
     patterns: HashMap<PatternId, Pattern>,
 
     pub tracks: Vec<Track>,
-    pub instruments: Vec<Option<Instrument>>,
+    pub instruments: Vec<Option<Device>>,
 
     node_indices: BitSet,
 }
@@ -99,7 +99,7 @@ impl App {
                     self.send_to_engine(EngineCommand::DeleteNode(instr.node_index))?;
                 }
 
-                self.instruments[idx] = Some(Instrument {
+                self.instruments[idx] = Some(Device {
                     node_index: sampler_index,
                     name: path.file_name().unwrap().to_string(),
                 });
@@ -385,7 +385,7 @@ impl App {
 
 fn compile_pattern(
     tracks: &[Track],
-    instruments: &[Option<Instrument>],
+    instruments: &[Option<Device>],
     pattern: &Pattern,
 ) -> EnginePattern {
     let mut events = Vec::new();
@@ -433,12 +433,6 @@ impl EngineState {
 
 pub enum AppCommand {
     DropPlugin(usize, Box<dyn Plugin + Send>),
-}
-
-#[derive(Clone)]
-pub struct Instrument {
-    pub name: String,
-    pub node_index: usize,
 }
 
 #[derive(Clone)]
