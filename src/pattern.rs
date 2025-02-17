@@ -145,9 +145,41 @@ impl Pattern {
         step.decr(pos.input(), step_size);
     }
 
-    pub fn set_key(&mut self, pos: Position, octave: u8, key: char) {
+    pub fn handle_input(&mut self, pos: Position, octave: u8, key: char, instr: usize) {
+        let input = pos.input();
         let step = self.step_mut(pos);
-        step.set_key(pos.input(), octave, key);
+
+        use InputKind::*;
+        let val = match input.kind {
+            Pitch => {
+                let pitch = key_to_pitch(octave, key);
+                if let Some(p) = pitch {
+                    if p != NOTE_OFF && step.instrument().is_none() {
+                        let instr_pos = pos + Position::new(pos.line, pos.column + 1);
+                        step.set(instr_pos.input(), instr as u8);
+                    }
+                }
+                pitch
+            }
+            Instr | EffectVal => match (step.cell(input.idx), key.to_digit(10)) {
+                (Some(val), Some(d)) => {
+                    let d = d as i16;
+                    let val = *val as i16 * 10 + d;
+                    if val <= u8::MAX.into() {
+                        Some(val as u8)
+                    } else {
+                        None
+                    }
+                }
+                (None, Some(d)) => Some(d as u8),
+                _ => None,
+            },
+            _ => Some(key as u8),
+        };
+
+        if let Some(val) = val {
+            step.set(input, val);
+        }
     }
 
     pub fn clear(&mut self, pos: Position) {
@@ -235,31 +267,6 @@ pub struct Step {
 }
 
 impl Step {
-    fn set_key(&mut self, input: Input, octave: u8, key: char) {
-        use InputKind::*;
-        let val = match input.kind {
-            Pitch => key_to_pitch(octave, key),
-            Instr | EffectVal => match (self.cell(input.idx), key.to_digit(10)) {
-                (Some(val), Some(d)) => {
-                    let d = d as i16;
-                    let val = *val as i16 * 10 + d;
-                    if val <= u8::MAX.into() {
-                        Some(val as u8)
-                    } else {
-                        None
-                    }
-                }
-                (None, Some(d)) => Some(d as u8),
-                _ => None,
-            },
-            _ => Some(key as u8),
-        };
-
-        if let Some(val) = val {
-            self.set(input, val);
-        }
-    }
-
     fn incr(&mut self, input: Input, step_size: StepSize) {
         let step = step_size.for_input(input);
         if let Some(v) = self.cell(input.idx) {

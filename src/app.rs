@@ -394,8 +394,9 @@ fn compile_pattern(
         for step in &track.steps {
             let offset = u8::min(TICKS_PER_LINE as u8 - 1, step.offset().unwrap_or(0));
             let note_offset = pattern_offset + offset as usize;
-            let instr_idx = step.instrument().unwrap_or(i as u8) as usize;
-            let Some(instr) = &instruments[instr_idx] else {
+            pattern_offset += TICKS_PER_LINE;
+            let instr_idx = step.instrument().unwrap_or(i as u8);
+            let Some(instr) = &instruments[instr_idx as usize] else {
                 continue;
             };
             let track_idx = tracks[i].node_index;
@@ -409,7 +410,6 @@ fn compile_pattern(
                 let note = Event::new(note, note_offset, track_idx, instr.node_index);
                 events.push(note);
             }
-            pattern_offset += TICKS_PER_LINE;
         }
     }
     events.sort_by(|a, b| a.offset.cmp(&b.offset));

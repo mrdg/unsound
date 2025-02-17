@@ -31,7 +31,7 @@ fn test_app() -> Result<()> {
     app.send(app.update_pattern(|p| {
         p.set_len(16);
         for _ in 0..4 {
-            p.set_key(cursor, 4, 'z');
+            p.handle_input(cursor, 4, 'z', 0);
             cursor.line += 4 // lines per beat;
         }
     }))?;

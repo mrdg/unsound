@@ -203,8 +203,10 @@ fn handle_editor_input(app: &App, view: &mut View, key: KeyEvent) -> Result<Msg>
             return Ok(app.update_pattern(|p| p.decr(view.editor.cursor, StepSize::Large)))
         }
         KeyCode::Char(key) => {
-            let msg =
-                app.update_pattern(|p| p.set_key(view.editor.cursor, app.state.octave as u8, key));
+            let instr = view.instruments.selected().unwrap_or(0);
+            let msg = app.update_pattern(|p| {
+                p.handle_input(view.editor.cursor, app.state.octave as u8, key, instr)
+            });
             if view.editor.cursor.is_pitch_input() {
                 move_editor_cursor(app, view, CursorMove::Down)
             }
