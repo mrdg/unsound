@@ -117,6 +117,16 @@ fn handle_editor_input(app: &App, view: &mut View, key: KeyEvent) -> Result<Msg>
                 view.selection = None;
                 return Ok(Noop);
             }
+            KeyCode::Backspace => {
+                let msg = app.update_pattern(|p| {
+                    let start = s.start();
+                    for pos in s.iter() {
+                        p.clear(start + pos)
+                    }
+                });
+                view.selection = None;
+                return Ok(msg);
+            }
             _ => {}
         }
     }

@@ -460,7 +460,7 @@ impl Selection {
         start.line <= line && line <= end.line && start.column <= column && column <= end.column
     }
 
-    fn start(&self) -> Position {
+    pub fn start(&self) -> Position {
         let line = usize::min(self.start.line, self.end.line);
         let col = usize::min(self.start.column, self.end.column);
         Position::new(line, col)
@@ -478,7 +478,7 @@ impl Selection {
         Rect::new(end.line - start.line + 1, end.column - start.column + 1)
     }
 
-    fn iter(&self) -> impl Iterator<Item = Position> {
+    pub fn iter(&self) -> impl Iterator<Item = Position> {
         SelectionIter {
             curr: Position::new(0, 0),
             end: self.end() - self.start(),
