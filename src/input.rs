@@ -278,7 +278,13 @@ fn handle_command_line_input(app: &App, view: &mut View, key: KeyEvent) -> Resul
                     let name = parts.get(1).map(|str| String::from(*str));
                     Ok(RenameTrack(idx, name))
                 }
-                _ => Err(anyhow!("invalid command {}", parts[0])),
+                cmd => {
+                    let Some(instr) = cmd.parse::<usize>().ok() else {
+                        return Err(anyhow!("invalid command {}", parts[0]));
+                    };
+                    view.instruments.select(Some(instr));
+                    Ok(Noop)
+                }
             };
             view.command.clear();
             view.focus = Focus::Editor;
