@@ -1,5 +1,6 @@
 pub mod app;
 pub mod audio;
+pub mod audio_graph;
 pub mod delay;
 pub mod engine;
 pub mod env;
@@ -17,4 +18,5 @@ pub const FRAMES_PER_BUFFER: usize = 128;
 
 // Allocate a larger buffer size, because sometimes cpal requests more than the
 // configured buffer size when switching the output device.
+// TODO: instead of using larger buffers, just call engine.process multiple times?
 pub const INTERNAL_BUFFER_SIZE: usize = 4 * FRAMES_PER_BUFFER;

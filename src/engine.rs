@@ -4,44 +4,39 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use atomic_float::AtomicF64;
-use get_many_mut::GetManyMutExt;
 use ringbuf::{Consumer, Producer};
+use slotmap::SecondaryMap;
 use triple_buffer::Input;
 
 use crate::app::{AppCommand, AppState, EngineState};
-use crate::audio::{self, Buffer, Rms, Stereo};
+use crate::audio::{self, Rms, Stereo};
+use crate::audio_graph::{self, NodeId};
 use crate::params::{self, Param, ParamInfo, Params};
 use crate::sampler::{Sampler, Sound};
 use crate::SAMPLE_RATE;
 use param_derive::Params;
 
-pub const MAX_INSTRUMENTS: usize = 16;
 pub const TICKS_PER_LINE: usize = 12;
-pub const MAX_TRACKS: usize = MAX_INSTRUMENTS + 1; // add 1 for master
-pub const MAX_NODES: usize = MAX_TRACKS + MAX_INSTRUMENTS;
-pub const MAX_BUFFERS: usize = MAX_TRACKS + 2; // add 1 for main output and 1 for scratch space
-pub const MAIN_OUTPUT: usize = MAX_BUFFERS - 1;
-pub const SCRATCH_BUFFER: usize = MAX_BUFFERS - 2;
-pub const MASTER_TRACK: usize = 0;
 const RMS_WINDOW_SIZE: usize = SAMPLE_RATE as usize / 10 * 3;
 const SUBFRAMES_PER_SEC: usize = 282240000; // LCM of common sample rates
 
+type BufferMap = SecondaryMap<NodeId, Buffer>;
+
 pub enum EngineCommand {
-    CreateNode(usize, Box<dyn Plugin + Send>),
-    DeleteNode(usize),
-    PreviewSound(Arc<Sound>),
+    CreateNode(NodeId, Node),
+    CreateBuffer(NodeId, Buffer),
+    DeleteNode(NodeId, DeleteMode),
+    ForceDeleteNode(NodeId),
+    PreviewSound(NodeId, Arc<Sound>),
+    NoteEvent(Event),
 }
 
 pub struct Engine {
     state: EngineState,
     state_buf: Input<EngineState>,
 
-    nodes: Vec<Node>,
-    buffers: Vec<Buffer>,
-
-    /// Time and node index for the last note-on event played for each track. This allows sending
-    /// a note off to a node when a new event is played a track.
-    last_events: Vec<Option<(u64, usize)>>,
+    nodes: SecondaryMap<NodeId, Node>,
+    buffers: SecondaryMap<NodeId, Buffer>,
 
     consumer: Consumer<EngineCommand>,
     producer: Producer<AppCommand>,
@@ -51,6 +46,8 @@ pub struct Engine {
     total_ticks: u64,
 
     preview: Sampler,
+
+    discard: Buffer,
 }
 
 impl Engine {
@@ -60,17 +57,9 @@ impl Engine {
         consumer: Consumer<EngineCommand>,
         producer: Producer<AppCommand>,
     ) -> Engine {
-        let mut nodes = Vec::with_capacity(MAX_NODES);
-        for _ in 0..MAX_NODES {
-            nodes.push(Node::new());
-        }
-        let mut buffers = Vec::with_capacity(MAX_BUFFERS);
-        for _ in 0..MAX_BUFFERS {
-            buffers.push(audio::buffer());
-        }
-
+        let nodes = SecondaryMap::with_capacity(audio_graph::DEFAULT_SIZE);
+        let buffers = SecondaryMap::with_capacity(audio_graph::DEFAULT_SIZE);
         let preview = Sampler::new(Sound::silence());
-        let last_events = vec![None; MAX_TRACKS];
 
         Self {
             nodes,
@@ -82,7 +71,7 @@ impl Engine {
             total_ticks: 0,
             preview,
             buffers,
-            last_events,
+            discard: Buffer::default(),
         }
     }
 
@@ -110,30 +99,52 @@ impl Engine {
         self.run_commands(state);
         self.tick(state, frames);
 
-        for entry in &state.node_order {
-            let node = &mut self.nodes[entry.node_index];
+        for entry in &state.process_schedule.entries {
+            // Nodes are deleted in the engine before they're deleted from the graph
+            // so the schedule can contain node ids for deleted nodes.
+            if !self.nodes.contains_key(entry.node_id) {
+                continue;
+            }
+            let node = &mut self.nodes[entry.node_id];
+
             if node.is_idle() {
                 continue;
             }
-            let Some(plugin) = &mut node.inner else {
-                continue;
-            };
-            let mut ctx = ProcessContext::new(&mut self.buffers, frames);
+            let mut ctx = ProcessContext::new(&mut self.buffers, &mut self.discard, frames);
+            ctx.volume = Some(&node.volume);
             ctx.mix = Some(&node.mix);
-            ctx.buffer_indices = entry.buffers;
-            node.status = Some(plugin.process(&mut ctx));
+
+            if let (Some(input), Some(output)) = (entry.input_buffer, entry.output_buffer) {
+                ctx.buffer_indices = Some((input, output));
+            }
+            node.status = Some(node.inner.process(&mut ctx));
+            if let Some(input) = entry.input_buffer {
+                for frame in &mut self.buffers[input].frames {
+                    *frame = Stereo::ZERO;
+                }
+            }
+
+            if node.should_drop() {
+                let node = self.nodes.remove(entry.node_id).unwrap();
+                self.producer
+                    .push(AppCommand::DropNode(entry.node_id, node))
+                    .ok()
+                    .unwrap();
+            }
         }
-        let mut ctx = ProcessContext::new(&mut self.buffers, frames);
+        let mut ctx = ProcessContext::new(&mut self.buffers, &mut self.discard, frames);
         self.preview.process(&mut ctx);
 
-        let main = &mut self.buffers[MAIN_OUTPUT][..frames];
-        for (i, frame) in main.iter_mut().enumerate() {
-            buffer[i] = *frame;
-            *frame = Stereo::ZERO;
+        if let Some(i) = state.process_schedule.main_output_buffer {
+            let main = &mut self.buffers[i].frames[..frames];
+            for (i, frame) in main.iter_mut().enumerate() {
+                buffer[i] = *frame;
+                *frame = Stereo::ZERO;
+            }
         }
 
-        for buf in self.buffers.iter_mut() {
-            for frame in buf {
+        for (_, buf) in self.buffers.iter_mut() {
+            for frame in &mut buf.frames {
                 *frame = Stereo::ZERO;
             }
         }
@@ -158,24 +169,31 @@ impl Engine {
             if event.offset > self.state.current_tick {
                 break;
             }
+            if !self.buffers.contains_key(event.buffer) {
+                continue;
+            }
+            if !self.nodes.contains_key(event.node) {
+                continue;
+            }
             if event.offset == self.state.current_tick {
-                let node_idx = event.node_index;
-                let track_idx = event.track_index;
+                let node_id = event.node;
+                let buffer_id = event.buffer;
 
-                if let Some((tick, node_idx)) = self.last_events[track_idx] {
-                    if tick != self.total_ticks {
-                        let node = &mut self.nodes[node_idx];
-                        node.send_event(PluginEvent::new(offset, track_idx, Note::Off));
+                let buf = &mut self.buffers[buffer_id];
+                if let Some((tick, node_id)) = buf.previous_event {
+                    if tick != self.total_ticks && self.nodes.contains_key(node_id) {
+                        let node = &mut self.nodes[node_id];
+                        node.send_event(PluginEvent::new(offset, buffer_id, Note::Off));
                     }
                 }
 
-                self.last_events[track_idx] = Some((self.total_ticks, node_idx));
+                buf.previous_event = Some((self.total_ticks, node_id));
                 if let Note::Off = event.note {
-                    self.last_events[track_idx] = None;
+                    buf.previous_event = None;
                 }
 
-                let node = &mut self.nodes[node_idx];
-                node.send_event(PluginEvent::new(offset, track_idx, event.note));
+                let node = &mut self.nodes[node_id];
+                node.send_event(PluginEvent::new(offset, buffer_id, event.note));
             }
         }
 
@@ -190,45 +208,36 @@ impl Engine {
     fn run_commands(&mut self, _state: &AppState) {
         while let Some(cmd) = self.consumer.pop() {
             match cmd {
-                EngineCommand::CreateNode(node_idx, plugin) => {
-                    let node = &mut self.nodes[node_idx];
-                    assert!(node.inner.is_none());
-                    node.inner = Some(plugin);
+                EngineCommand::NoteEvent(event) => {
+                    let node = &mut self.nodes[event.node];
+                    node.send_event(PluginEvent::new(event.offset, event.buffer, event.note));
                 }
-                EngineCommand::DeleteNode(node_idx) => {
-                    for (i, node) in self.nodes.iter_mut().enumerate() {
-                        if node.inner.is_some() && node.deleted && node.is_quiet() {
-                            let plugin = node.reset();
-                            if self
-                                .producer
-                                .push(AppCommand::DropPlugin(i, plugin))
-                                .is_err()
-                            {
-                                eprintln!("failed to return node to app thread");
-                            }
-                        }
-                    }
-                    let node = &mut self.nodes[node_idx];
-                    for (track_idx, event) in self.last_events.iter_mut().enumerate() {
-                        if let Some((_, idx)) = event {
-                            if *idx == node_idx {
-                                *event = None;
-                                node.send_event(PluginEvent::new(0, track_idx, Note::Off))
-                            }
-                        }
-                    }
-                    node.delete();
+                EngineCommand::CreateNode(node_id, node) => {
+                    self.nodes.insert(node_id, node);
                 }
-                EngineCommand::PreviewSound(sound) => {
+                EngineCommand::CreateBuffer(node_id, buffer) => {
+                    self.buffers.insert(node_id, buffer);
+                }
+                EngineCommand::ForceDeleteNode(node_id) => {
+                    let msg = if let Some(node) = self.nodes.remove(node_id) {
+                        AppCommand::DropNode(node_id, node)
+                    } else {
+                        let buffer = self.buffers.remove(node_id).unwrap();
+                        AppCommand::DropBuffer(node_id, buffer)
+                    };
+                    self.producer.push(msg).ok().unwrap();
+                }
+                EngineCommand::DeleteNode(node_idx, delete_mode) => {
+                    let node = &mut self.nodes[node_idx];
+                    node.delete(delete_mode);
+                }
+                EngineCommand::PreviewSound(output, sound) => {
                     let velocity = 80; // TODO: handle this with gain instead?
                     self.preview
-                        .send_event(PluginEvent::new(0, MAIN_OUTPUT, Note::Off));
+                        .send_event(PluginEvent::new(0, output, Note::Off));
                     self.preview.load(sound);
-                    self.preview.send_event(PluginEvent::new(
-                        0,
-                        MAIN_OUTPUT,
-                        Note::On(48, velocity),
-                    ));
+                    self.preview
+                        .send_event(PluginEvent::new(0, output, Note::On(48, velocity)));
                 }
             }
         }
@@ -251,7 +260,6 @@ pub struct Track {
 pub struct TrackParams {
     volume: Param,
     mute: Param,
-    mix: Param,
 }
 
 impl TrackParams {
@@ -267,10 +275,6 @@ impl TrackParams {
             mute: Param::new(
                 1.0,
                 ParamInfo::bool("Mute", 0.0).with_smoothing(params::Smoothing::exp_default()),
-            ),
-            mix: Param::new(
-                1.0,
-                ParamInfo::bool("Mix", 1.0).with_smoothing(params::Smoothing::exp_default()),
             ),
         }
     }
@@ -312,19 +316,24 @@ impl Plugin for Track {
     }
 }
 
-struct Node {
-    inner: Option<Box<dyn Plugin + Send>>,
+pub struct Node {
+    inner: Box<dyn Plugin + Send>,
     status: Option<ProcessStatus>,
     deleted: bool,
+    volume: Param,
     mix: Param,
 }
 
 impl Node {
-    fn new() -> Self {
+    pub fn new(inner: Box<dyn Plugin + Send>) -> Self {
         Self {
             status: None,
             deleted: false,
-            inner: None,
+            inner,
+            volume: Param::new(
+                1.0,
+                ParamInfo::new("Volume", 0, 1).with_smoothing(params::Smoothing::exp_default()),
+            ),
             mix: Param::new(
                 1.0,
                 ParamInfo::new("Mix", 0, 1).with_smoothing(params::Smoothing::exp_default()),
@@ -336,32 +345,51 @@ impl Node {
         if self.deleted {
             return;
         }
-        let Some(inner) = &mut self.inner else { return };
-        inner.send_event(ev);
-        self.status = None;
+        self.inner.send_event(ev);
+        self.status = Some(ProcessStatus::Continue);
     }
 
-    fn delete(&mut self) {
+    fn delete(&mut self, mode: DeleteMode) {
         self.deleted = true;
-        self.mix.set(0.0);
+        match mode {
+            DeleteMode::Passthrough => self.mix.set(0.0),
+            DeleteMode::FadeOut => self.volume.set(0.0),
+        }
     }
 
-    fn is_quiet(&self) -> bool {
-        self.mix.value() == 0.0
+    fn should_drop(&self) -> bool {
+        if !self.deleted {
+            return false;
+        }
+        self.status.is_none()
+            || self.is_idle()
+            || self.volume.value() == 0.0
+            || self.mix.value() == 0.0
     }
 
     fn is_idle(&self) -> bool {
         matches!(self.status, Some(ProcessStatus::Idle))
     }
+}
 
-    fn reset(&mut self) -> Box<dyn Plugin + Send> {
-        self.deleted = false;
-        self.mix.set(1.0);
-        self.status = None;
-        self.inner.take().unwrap()
+pub struct Buffer {
+    pub frames: audio::Buffer,
+
+    /// Time and node id for the last note-on event for this buffer. Whenever
+    /// a note-on is received for this buffer, we send a note-off to previous node.
+    previous_event: Option<(u64, NodeId)>,
+}
+
+impl Default for Buffer {
+    fn default() -> Self {
+        Self {
+            frames: audio::buffer(),
+            previous_event: None,
+        }
     }
 }
 
+#[derive(Debug)]
 pub enum ProcessStatus {
     Continue,
     Idle,
@@ -371,61 +399,83 @@ pub enum ProcessStatus {
 pub struct ProcessContext<'a> {
     pub num_frames: usize,
 
+    volume: Option<&'a Param>,
     mix: Option<&'a Param>,
 
-    buffer_indices: Option<(usize, usize)>,
-    buffers: &'a mut [Buffer],
+    buffer_indices: Option<(NodeId, NodeId)>,
+    buffers: &'a mut BufferMap,
+
+    discard: &'a mut Buffer,
 }
 
 impl<'a> ProcessContext<'a> {
-    pub fn new(buffers: &'a mut [Buffer], num_frames: usize) -> Self {
+    pub fn new(buffers: &'a mut BufferMap, discard: &'a mut Buffer, num_frames: usize) -> Self {
         Self {
             num_frames,
             buffers,
             buffer_indices: None,
+            volume: None,
             mix: None,
+            discard,
         }
     }
 
-    pub fn output(&mut self, idx: usize, range: &Range<usize>) -> impl Iterator<Item = FrameRef> {
-        let buf = &mut self.buffers[idx];
-        buf[range.clone()].iter_mut().map(|o| {
-            let mix = self.mix.map_or(1.0, |v| v.value() as f32);
-            FrameRef::new(&Stereo::ZERO, o, mix)
+    pub fn output(
+        &mut self,
+        buffer: NodeId,
+        range: &Range<usize>,
+    ) -> impl Iterator<Item = FrameRef> {
+        // Instruments might have active voices associated with a buffer that's
+        // been deleted, so fall back to a discard buffer here to allow those voices
+        // to process until they're back in the idle state.
+        let buf = self.buffers.get_mut(buffer).unwrap_or(self.discard);
+
+        buf.frames[range.clone()].iter_mut().map(|o| {
+            let volume = self.volume.map_or(1.0, |v| v.value() as f32);
+            FrameRef::new(&Stereo::ZERO, o, 1.0, volume)
         })
     }
 
     pub fn buffers(&mut self) -> impl Iterator<Item = FrameRef> {
         let (input, output) = self.buffer_indices.unwrap();
 
-        let [input, output] = GetManyMutExt::get_many_mut(self.buffers, [input, output])
+        let [input, output] = self
+            .buffers
+            .get_disjoint_mut([input, output])
             .expect("buffers should exist");
 
-        let input = input[..self.num_frames].iter();
-        let output = output[..self.num_frames].iter_mut();
+        let input = input.frames[..self.num_frames].iter();
+        let output = output.frames[..self.num_frames].iter_mut();
 
         iter::zip(input, output).map(|(i, o)| {
+            let volume = self.volume.map_or(1.0, |v| v.value() as f32);
             let mix = self.mix.map_or(1.0, |v| v.value() as f32);
-            FrameRef::new(i, o, mix)
+            FrameRef::new(i, o, mix, volume)
         })
     }
 }
 
 pub struct FrameRef<'a> {
+    volume: f32,
     mix: f32,
     pub input: &'a Stereo,
     output: &'a mut Stereo,
 }
 
 impl<'a> FrameRef<'a> {
-    fn new(input: &'a Stereo, output: &'a mut Stereo, mix: f32) -> Self {
-        Self { input, output, mix }
+    fn new(input: &'a Stereo, output: &'a mut Stereo, mix: f32, volume: f32) -> Self {
+        Self {
+            input,
+            output,
+            mix,
+            volume,
+        }
     }
 
     pub fn write(&mut self, frame: Stereo) {
         let output = frame * self.mix;
         let input = *self.input * (1.0 - self.mix);
-        *self.output += input + output;
+        *self.output += (input + output) * self.volume;
     }
 }
 
@@ -439,15 +489,15 @@ pub trait Plugin {
 pub struct PluginEvent {
     /// offset of the event within the audio buffer
     pub offset: usize,
-    pub track_idx: usize,
+    pub buffer: NodeId,
     pub note: Note,
 }
 
 impl PluginEvent {
-    pub fn new(offset: usize, track_idx: usize, note: Note) -> Self {
+    pub fn new(offset: usize, buffer: NodeId, note: Note) -> Self {
         Self {
             offset,
-            track_idx,
+            buffer,
             note,
         }
     }
@@ -465,17 +515,17 @@ pub struct Event {
     pub note: Note,
     /// offset in ticks relative to the start of the pattern
     pub offset: usize,
-    pub node_index: usize,
-    pub track_index: usize,
+    pub node: NodeId,
+    pub buffer: NodeId,
 }
 
 impl Event {
-    pub fn new(note: Note, offset: usize, track_index: usize, node_index: usize) -> Self {
+    pub fn new(note: Note, offset: usize, buffer: NodeId, node: NodeId) -> Self {
         Self {
             note,
             offset,
-            node_index,
-            track_index,
+            node,
+            buffer,
         }
     }
 }
@@ -484,4 +534,9 @@ impl Event {
 pub enum Note {
     On(u8, u8),
     Off,
+}
+
+pub enum DeleteMode {
+    Passthrough,
+    FadeOut,
 }

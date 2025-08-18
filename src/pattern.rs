@@ -2,7 +2,7 @@ use std::ops::{Add, Sub};
 
 use ratatui::style::Color;
 
-use crate::{app::random_color, engine::MAX_INSTRUMENTS};
+use crate::app::random_color;
 
 pub const INPUTS_PER_STEP: usize = 6;
 pub const MAX_PITCH: u8 = 109;
@@ -86,17 +86,19 @@ impl Rect {
 pub struct Pattern {
     pub color: Color,
     pub tracks: Vec<Track>,
+    length: usize,
 }
 
 impl Pattern {
     pub fn new(num_tracks: usize) -> Self {
         let mut tracks = Vec::with_capacity(num_tracks);
         for _ in 0..num_tracks {
-            tracks.push(Track::new());
+            tracks.push(Track::new(DEFAULT_PATTERN_LEN));
         }
         Self {
             color: random_color(),
             tracks,
+            length: DEFAULT_PATTERN_LEN,
         }
     }
 
@@ -105,7 +107,7 @@ impl Pattern {
     }
 
     pub fn add_track(&mut self, idx: usize) {
-        let track = Track::new();
+        let track = Track::new(self.len());
         if idx > self.tracks.len() {
             self.tracks.push(track);
         } else {
@@ -118,7 +120,7 @@ impl Pattern {
     }
 
     pub fn len(&self) -> usize {
-        self.tracks[0].steps.len()
+        self.length
     }
 
     pub fn set_len(&mut self, new_len: usize) {
@@ -126,6 +128,7 @@ impl Pattern {
             // TODO: return error
             return;
         }
+        self.length = new_len;
         for track in &mut self.tracks {
             track.steps.resize(new_len, Step::default())
         }
@@ -234,9 +237,9 @@ pub struct Track {
 }
 
 impl Track {
-    fn new() -> Self {
+    fn new(length: usize) -> Self {
         Self {
-            steps: vec![Step::default(); DEFAULT_PATTERN_LEN],
+            steps: vec![Step::default(); length],
         }
     }
 }
@@ -293,17 +296,12 @@ impl Step {
                     return;
                 }
             }
-            Instr => {
-                if val as usize >= MAX_INSTRUMENTS {
-                    return;
-                }
-            }
             EffectCmd => {
                 if !(val as char).is_ascii_alphabetic() {
                     return;
                 }
             }
-            EffectVal => {}
+            Instr | EffectVal => {}
         }
         *self.cell_mut(input.idx) = Some(val);
     }

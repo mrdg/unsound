@@ -213,7 +213,7 @@ fn render_mixer_controls(app: &App, track: &Track, buf: &mut Buffer, area: Rect,
         height: 2,
     };
 
-    let volume = app.params(track.node_index).get_param(TrackParams::VOLUME);
+    let volume = app.params(track.node.output).get_param(TrackParams::VOLUME);
     let block = Block::default()
         .borders(Borders::TOP)
         .border_style(Style::default().fg(BORDER_COLOR));
@@ -234,7 +234,7 @@ fn render_mixer_controls(app: &App, track: &Track, buf: &mut Buffer, area: Rect,
         return;
     }
 
-    let muted = app.params(track.node_index).get_param(TrackParams::MUTE);
+    let muted = app.params(track.node.output).get_param(TrackParams::MUTE);
     let button_style = if muted.as_bool() {
         Style::default().bg(Color::DarkGray)
     } else {

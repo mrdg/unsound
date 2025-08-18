@@ -7,17 +7,17 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
 use atomic_float::AtomicF64;
-use bit_set::BitSet;
 use camino::Utf8PathBuf;
 use lru::LruCache;
 use ratatui::style::Color;
-use ringbuf::{Consumer, Producer, RingBuffer};
-use triple_buffer::{Input, Output, TripleBuffer};
+use ringbuf::Producer;
+use triple_buffer::Input;
 
+use crate::audio_graph::{AudioGraph, NodeId, Schedule, TrackNode};
 use crate::delay::Delay;
 use crate::engine::{
-    Engine, EngineCommand, Event, Note, Pattern as EnginePattern, Plugin, Track as EngineTrack,
-    TrackParams, MAX_INSTRUMENTS, MAX_NODES, MAX_TRACKS, SCRATCH_BUFFER, TICKS_PER_LINE,
+    Buffer, DeleteMode, EngineCommand, Event, Node, Note, Pattern as EnginePattern, Plugin,
+    Track as EngineTrack, TrackParams, TICKS_PER_LINE,
 };
 use crate::files::FileBrowser;
 use crate::params::Params;
@@ -31,48 +31,75 @@ pub struct App {
     pub engine_state: EngineState,
 
     state_buf: Input<AppState>,
+
     producer: Producer<EngineCommand>,
-    consumer: Consumer<AppCommand>,
     pub file_browser: FileBrowser,
 
-    params: HashMap<usize, Arc<dyn Params>>,
+    params: HashMap<NodeId, Arc<dyn Params>>,
     preview_cache: LruCache<Utf8PathBuf, Arc<Sound>>,
     patterns: HashMap<PatternId, Pattern>,
 
     pub tracks: Vec<Track>,
     pub instruments: Vec<Option<Device>>,
 
-    node_indices: BitSet,
+    pub audio_graph: AudioGraph,
 }
 
 impl App {
-    pub fn send(&mut self, msg: Msg) -> Result<()> {
-        while let Some(cmd) = self.consumer.pop() {
-            match cmd {
-                AppCommand::DropPlugin(node_index, plugin) => {
-                    drop(plugin);
-                    self.node_indices.insert(node_index);
-                }
-            }
+    pub fn new(
+        app_state: AppState,
+        state_input: Input<AppState>,
+        mut eng_cmd_prod: Producer<EngineCommand>,
+        file_browser: FileBrowser,
+    ) -> Self {
+        let preview_cache = LruCache::new(NonZeroUsize::new(64).unwrap());
+
+        let audio_graph = AudioGraph::new();
+        for id in &[
+            audio_graph.main_output,
+            audio_graph.tmp_buffer1,
+            audio_graph.tmp_buffer2,
+        ] {
+            push_to_engine(
+                &mut eng_cmd_prod,
+                EngineCommand::CreateBuffer(*id, Buffer::default()),
+            );
         }
 
+        let mut app = Self {
+            state: app_state,
+            state_buf: state_input,
+            producer: eng_cmd_prod,
+            file_browser,
+            params: HashMap::new(),
+            preview_cache,
+            engine_state: EngineState::default(),
+            patterns: HashMap::new(),
+            tracks: Vec::new(),
+            instruments: vec![None; 16],
+            audio_graph,
+        };
+
+        app.send(Msg::CreateTrack(
+            0,
+            Some(app.audio_graph.main_output),
+            TrackType::Bus,
+            Some(String::from("Master")),
+        ))
+        .expect("create master track");
+
+        app
+    }
+
+    pub fn send(&mut self, msg: Msg) -> Result<()> {
         self.dispatch(msg)?;
         self.recompile_patterns();
+        self.state.process_schedule = self.audio_graph.sort();
         let input_buf = self.state_buf.input_buffer();
         input_buf.clone_from(&self.state);
         self.state_buf.publish();
 
         Ok(())
-    }
-
-    fn get_node_index(&mut self, range: Range<usize>) -> Result<usize> {
-        for n in range {
-            if !self.node_indices.contains(n) {
-                self.node_indices.insert(n);
-                return Ok(n);
-            }
-        }
-        Err(anyhow!("reached max. number of nodes"))
     }
 
     fn dispatch(&mut self, msg: Msg) -> Result<()> {
@@ -89,37 +116,42 @@ impl App {
                 // TODO: keep settings from previous sampler?
                 let snd = sampler::load_file(&path)?;
                 let sampler: Box<dyn Plugin + Send> = Box::new(Sampler::new(snd));
-                let sampler_index = self.get_node_index(MAX_TRACKS..MAX_NODES)?;
-                self.params.insert(sampler_index, sampler.params());
-                let cmd = EngineCommand::CreateNode(sampler_index, sampler);
-                self.send_to_engine(cmd)?;
 
-                if let Some(instr) = &self.instruments[idx] {
-                    self.params.remove(&instr.node_index);
-                    self.send_to_engine(EngineCommand::DeleteNode(instr.node_index))?;
-                }
+                let node_id = self.audio_graph.add_instrument();
+                self.params.insert(node_id, sampler.params());
+                let node = Node::new(sampler);
 
-                self.instruments[idx] = Some(Device {
-                    node_index: sampler_index,
-                    name: path.file_name().unwrap().to_string(),
-                });
-                self.update_node_order();
+                push_to_engine(&mut self.producer, EngineCommand::CreateNode(node_id, node));
+
+                self.delete_instrument(idx);
+                self.instruments[idx] = Some(Device::new(node_id, path.file_name().unwrap()));
             }
             LoadEffect(idx, effect) => {
                 match effect.as_str() {
                     "delay" => {
-                        let delay_index = self.get_node_index(MAX_TRACKS..MAX_NODES)?;
+                        let node_id = self.audio_graph.add_effect();
                         let delay: Box<dyn Plugin + Send> = Box::new(Delay::new(44100 / 8));
-                        let cmd = EngineCommand::CreateNode(delay_index, delay);
-                        self.send_to_engine(cmd)?;
-                        self.tracks[idx].effects.push(Device {
-                            node_index: delay_index,
-                            name: String::from("Delay"),
-                        });
+                        self.params.insert(node_id, delay.params());
+
+                        let node = Node::new(delay);
+                        push_to_engine(
+                            &mut self.producer,
+                            EngineCommand::CreateNode(node_id, node),
+                        );
+
+                        let track = &mut self.tracks[idx];
+                        let input = track
+                            .effects
+                            .last()
+                            .map(|d| d.node_id)
+                            .unwrap_or(track.node.buffer);
+
+                        self.audio_graph.connect(input, node_id);
+                        self.audio_graph.connect(node_id, track.node.output);
+                        self.tracks[idx].effects.push(Device::new(node_id, "Delay"));
                     }
                     _ => return Err(anyhow!("unknown effect {effect}")),
                 };
-                self.update_node_order();
             }
             LoopToggle(idx) => {
                 self.state.loop_range = match self.state.loop_range {
@@ -155,7 +187,11 @@ impl App {
                     }
                 };
 
-                self.send_to_engine(EngineCommand::PreviewSound(sound))?;
+                let output = self.audio_graph.main_output;
+                push_to_engine(
+                    &mut self.producer,
+                    EngineCommand::PreviewSound(output, sound),
+                );
             }
             SelectPattern(idx) => {
                 if idx < self.state.song.len() {
@@ -222,23 +258,25 @@ impl App {
                 self.state.song.insert(idx + 1, new_id);
             }
             ChangeDir(dir) => self.file_browser.move_to(dir)?,
-            CreateTrack(idx, output_index, track_type, name) => {
-                let node_index = self.get_node_index(0..MAX_TRACKS)?;
-                let engine_track = EngineTrack::new();
+            CreateTrack(idx, output_node, track_type, name) => {
+                let track_node = self.audio_graph.add_track();
+                self.audio_graph
+                    .connect(track_node.buffer, track_node.output);
+
+                let output_node =
+                    output_node.unwrap_or_else(|| self.tracks.last().unwrap().node.buffer);
+                self.audio_graph.connect(track_node.output, output_node);
+
+                let track_output = EngineTrack::new();
+                self.params.insert(track_node.output, track_output.params());
+
                 let track = Track::new(
-                    node_index,
-                    output_index,
+                    track_node.clone(),
                     track_type,
                     name,
-                    engine_track.rms_out.clone(),
+                    track_output.rms_out.clone(),
                 );
-                self.params.insert(node_index, engine_track.params());
-
-                if idx > self.tracks.len() {
-                    self.tracks.push(track);
-                } else {
-                    self.tracks.insert(idx, track)
-                }
+                self.tracks.insert(idx, track);
 
                 if matches!(track_type, TrackType::Instrument) {
                     for pattern in &mut self.patterns.values_mut() {
@@ -246,57 +284,97 @@ impl App {
                     }
                 }
 
-                let engine_track: Box<dyn Plugin + Send> = Box::new(engine_track);
-                let cmd = EngineCommand::CreateNode(node_index, engine_track);
-                self.send_to_engine(cmd)?;
-                self.update_node_order();
+                let buffer = Buffer::default();
+                let cmd = EngineCommand::CreateBuffer(track_node.buffer, buffer);
+                push_to_engine(&mut self.producer, cmd);
+
+                let track_output: Box<dyn Plugin + Send> = Box::new(track_output);
+                let node = Node::new(track_output);
+                let cmd = EngineCommand::CreateNode(track_node.output, node);
+                push_to_engine(&mut self.producer, cmd);
             }
             DeleteTrack(idx) => {
-                self.tracks.remove(idx);
-                for pattern in &mut self.patterns.values_mut() {
-                    pattern.delete_track(idx);
+                let track = self.tracks.remove(idx);
+                self.params.remove(&track.node.output);
+                if matches!(track.track_type, TrackType::Instrument) {
+                    for pattern in &mut self.patterns.values_mut() {
+                        pattern.delete_track(idx);
+                    }
                 }
-                self.update_node_order();
+
+                // Send a note off for this track to all instruments.
+                for instr in &mut self.instruments {
+                    let Some(instr) = instr else { continue };
+                    let note_off = Event::new(Note::Off, 0, track.node.buffer, instr.node_id);
+                    push_to_engine(&mut self.producer, EngineCommand::NoteEvent(note_off));
+                }
+
+                // Deleting the output node will gradually fade out the track's audio. Any other
+                // nodes on the track will be cleaned up once the output node has been freed.
+                let node_id = track.node.output;
+                push_to_engine(
+                    &mut self.producer,
+                    EngineCommand::DeleteNode(node_id, DeleteMode::FadeOut),
+                );
             }
             RenameTrack(idx, name) => {
                 self.tracks[idx].name = name;
             }
-            ParamInc(node_index, param_idx, step_size) => {
-                self.params(node_index).get_param(param_idx).incr(step_size);
+            ParamInc(node_id, param_idx, step_size) => {
+                self.params(node_id).get_param(param_idx).incr(step_size);
             }
-            ParamDec(node_index, param_idx, step_size) => {
-                self.params(node_index).get_param(param_idx).decr(step_size);
+            ParamDec(node_id, param_idx, step_size) => {
+                self.params(node_id).get_param(param_idx).decr(step_size);
+            }
+            ParamSet(node_id, param_idx, value) => {
+                self.params(node_id).get_param(param_idx).set(value);
             }
             DeleteInstrument(idx) => {
-                if let Some(instr) = &self.instruments[idx] {
-                    self.params.remove(&instr.node_index);
-                    self.send_to_engine(EngineCommand::DeleteNode(instr.node_index))?;
-                }
-                self.instruments[idx] = None;
+                self.delete_instrument(idx);
             }
             ToggleMute(track_idx) => {
-                let idx = self.tracks[track_idx].node_index;
-                self.params(idx).get_param(TrackParams::MUTE).toggle();
+                let id = self.tracks[track_idx].node.output;
+                self.params(id).get_param(TrackParams::MUTE).toggle();
             }
             TrackVolumeIncr(track_idx) => {
-                let idx = self.tracks[track_idx].node_index;
-                self.params(idx)
+                let id = self.tracks[track_idx].node.output;
+                self.params(id)
                     .get_param(TrackParams::VOLUME)
                     .incr(StepSize::Large);
             }
             TrackVolumeDecr(track_idx) => {
-                let idx = self.tracks[track_idx].node_index;
+                let idx = self.tracks[track_idx].node.output;
                 self.params(idx)
                     .get_param(TrackParams::VOLUME)
                     .decr(StepSize::Large);
             }
+            Command(cmd) => match cmd {
+                AppCommand::DropNode(node_id, plugin) => {
+                    drop(plugin);
+                    self.drop_node(node_id);
+                }
+                AppCommand::DropBuffer(node_id, buffer) => {
+                    drop(buffer);
+                    self.drop_node(node_id);
+                }
+            },
         }
 
         Ok(())
     }
 
-    pub fn params(&self, node_index: usize) -> &Arc<dyn Params> {
-        self.params.get(&node_index).unwrap()
+    fn drop_node(&mut self, node_id: NodeId) {
+        self.audio_graph.remove_node(node_id);
+        for node_id in self.audio_graph.orphaned_nodes() {
+            if self.audio_graph.mark_deleted(node_id) {
+                // The nodes in the audio graph will be freed once the engine returns the deleted nodes
+                push_to_engine(&mut self.producer, EngineCommand::ForceDeleteNode(node_id));
+            }
+        }
+    }
+
+    pub fn params(&self, node_id: NodeId) -> &Arc<dyn Params> {
+        self.params.get(&node_id).unwrap()
     }
 
     pub fn update_pattern<F>(&self, mut f: F) -> Msg
@@ -321,13 +399,6 @@ impl App {
             }
         }
         PatternId(max + 1)
-    }
-
-    fn send_to_engine(&mut self, cmd: EngineCommand) -> Result<()> {
-        if self.producer.push(cmd).is_err() {
-            return Err(anyhow!("unable to send message to engine"));
-        }
-        Ok(())
     }
 
     fn recompile_patterns(&mut self) {
@@ -357,30 +428,21 @@ impl App {
         &steps[range.start..range.end]
     }
 
-    fn update_node_order(&mut self) {
-        let mut entries = Vec::new();
-
-        for instr in &self.instruments {
-            let Some(instr) = instr else { continue };
-            entries.push(NodeEntry::new(instr.node_index, None));
+    fn delete_instrument(&mut self, idx: usize) {
+        if let Some(instr) = self.instruments[idx].take() {
+            self.params.remove(&instr.node_id);
+            push_to_engine(
+                &mut self.producer,
+                EngineCommand::DeleteNode(instr.node_id, DeleteMode::FadeOut),
+            );
         }
-
-        for track in &self.tracks {
-            let mut input = track.node_index;
-            let mut output = SCRATCH_BUFFER;
-
-            for effect in &track.effects {
-                let entry = NodeEntry::new(effect.node_index, Some((input, output)));
-                entries.push(entry);
-                (input, output) = (output, input);
-            }
-
-            let entry = NodeEntry::new(track.node_index, Some((input, track.output_node_index)));
-            entries.push(entry);
-        }
-
-        self.state.node_order = entries;
     }
+}
+
+fn push_to_engine(producer: &mut Producer<EngineCommand>, cmd: EngineCommand) {
+    producer
+        .push(cmd)
+        .unwrap_or_else(|_| panic!("ring buffer should always have capacity"))
 }
 
 fn compile_pattern(
@@ -396,10 +458,10 @@ fn compile_pattern(
             let note_offset = pattern_offset + offset as usize;
             pattern_offset += TICKS_PER_LINE;
             let instr_idx = step.instrument().unwrap_or(i as u8);
-            let Some(instr) = &instruments[instr_idx as usize] else {
+            let Some(Some(instr)) = instruments.get(instr_idx as usize) else {
                 continue;
             };
-            let track_idx = tracks[i].node_index;
+            let buffer = tracks[i].node.buffer;
             let velocity = step.velocity();
             for pitch in step.notes() {
                 let note = if pitch == NOTE_OFF {
@@ -407,7 +469,7 @@ fn compile_pattern(
                 } else {
                     Note::On(pitch, velocity)
                 };
-                let note = Event::new(note, note_offset, track_idx, instr.node_index);
+                let note = Event::new(note, note_offset, buffer, instr.node_id);
                 events.push(note);
             }
         }
@@ -432,7 +494,8 @@ impl EngineState {
 }
 
 pub enum AppCommand {
-    DropPlugin(usize, Box<dyn Plugin + Send>),
+    DropNode(NodeId, Node),
+    DropBuffer(NodeId, Buffer),
 }
 
 #[derive(Clone)]
@@ -445,7 +508,23 @@ pub struct AppState {
     pub patterns: HashMap<PatternId, EnginePattern>,
     pub song: Vec<PatternId>,
     pub loop_range: Option<(usize, usize)>,
-    pub node_order: Vec<NodeEntry>,
+    pub process_schedule: Schedule,
+}
+
+impl Default for AppState {
+    fn default() -> Self {
+        Self {
+            bpm: 120,
+            lines_per_beat: 4,
+            octave: 4,
+            is_playing: false,
+            patterns: HashMap::new(),
+            song: Vec::new(),
+            selected_pattern: 0,
+            loop_range: Some((0, 0)),
+            process_schedule: Schedule::default(),
+        }
+    }
 }
 
 impl AppState {
@@ -476,8 +555,7 @@ impl AppState {
 
 #[derive(Clone)]
 pub struct Track {
-    pub node_index: usize,
-    pub output_node_index: usize,
+    pub node: TrackNode,
     pub effects: Vec<Device>,
     pub track_type: TrackType,
     pub name: Option<String>,
@@ -486,15 +564,13 @@ pub struct Track {
 
 impl Track {
     fn new(
-        node_index: usize,
-        output_node_index: usize,
+        node: TrackNode,
         track_type: TrackType,
         name: Option<String>,
         rms: Arc<[AtomicF64; 2]>,
     ) -> Self {
         Self {
-            node_index,
-            output_node_index,
+            node,
             effects: vec![],
             track_type,
             name,
@@ -516,65 +592,23 @@ impl Track {
 
 #[derive(Clone)]
 pub struct Device {
-    pub node_index: usize,
+    pub node_id: NodeId,
     pub name: String,
+}
+
+impl Device {
+    fn new(node_id: NodeId, name: &str) -> Self {
+        Self {
+            node_id,
+            name: name.to_string(),
+        }
+    }
 }
 
 #[derive(Copy, Clone, Debug)]
 pub enum TrackType {
     Instrument,
     Bus,
-}
-
-pub fn new() -> Result<(App, Output<AppState>, Engine, Output<EngineState>)> {
-    let engine_state = EngineState {
-        current_pattern: 0,
-        current_tick: 0,
-    };
-
-    let app_state = AppState {
-        bpm: 120,
-        lines_per_beat: 4,
-        octave: 4,
-        is_playing: false,
-        patterns: HashMap::new(),
-        song: Vec::new(),
-        selected_pattern: 0,
-        loop_range: Some((0, 0)),
-        node_order: Vec::new(),
-    };
-
-    // Triple buffers are used to share app state with the engine and vice versa. This should
-    // ensure that both threads always have a coherent view of the other thread's state.
-    let (app_state_input, app_state_output) = TripleBuffer::new(&app_state).split();
-    let (engine_state_input, engine_state_output) = TripleBuffer::new(&engine_state).split();
-
-    let params = HashMap::new();
-    let node_indices = BitSet::with_capacity(MAX_NODES);
-
-    let (eng_producer, eng_consumer) = RingBuffer::<EngineCommand>::new(64).split();
-    let (app_producer, app_consumer) = RingBuffer::<AppCommand>::new(64).split();
-
-    let engine = Engine::new(engine_state, engine_state_input, eng_consumer, app_producer);
-
-    let preview_cache = LruCache::new(NonZeroUsize::new(64).unwrap());
-
-    let app = App {
-        state: app_state,
-        state_buf: app_state_input,
-        producer: eng_producer,
-        consumer: app_consumer,
-        file_browser: FileBrowser::with_path("./sounds")?,
-        params,
-        preview_cache,
-        engine_state: EngineState::default(),
-        patterns: HashMap::new(),
-        node_indices,
-        tracks: Vec::new(),
-        instruments: vec![None; MAX_INSTRUMENTS],
-    };
-
-    Ok((app, app_state_output, engine, engine_state_output))
 }
 
 pub enum Msg {
@@ -598,19 +632,25 @@ pub enum Msg {
     ChangeDir(Utf8PathBuf),
     SetBpm(u16),
     SetOct(u16),
-    CreateTrack(usize, usize, TrackType, Option<String>),
+    CreateTrack(usize, Option<NodeId>, TrackType, Option<String>),
     DeleteTrack(usize),
     RenameTrack(usize, Option<String>),
-    ParamInc(usize, usize, StepSize),
-    ParamDec(usize, usize, StepSize),
+    ParamInc(NodeId, usize, StepSize),
+    ParamDec(NodeId, usize, StepSize),
+    ParamSet(NodeId, usize, f64),
     ToggleMute(usize),
     TrackVolumeIncr(usize),
     TrackVolumeDecr(usize),
+    Command(AppCommand),
 }
 
 impl Msg {
     pub fn is_exit(&self) -> bool {
         matches!(self, Self::Exit)
+    }
+
+    pub fn is_noop(&self) -> bool {
+        matches!(self, Self::Noop)
     }
 }
 
@@ -628,19 +668,4 @@ pub fn random_color() -> Color {
     let g = rand::random::<u8>();
     let b = rand::random::<u8>();
     Color::Rgb(r, g, b)
-}
-
-#[derive(Clone)]
-pub struct NodeEntry {
-    pub node_index: usize,
-    pub buffers: Option<(usize, usize)>,
-}
-
-impl NodeEntry {
-    fn new(node_index: usize, buffers: Option<(usize, usize)>) -> Self {
-        Self {
-            node_index,
-            buffers,
-        }
-    }
 }

@@ -6,7 +6,6 @@ use ratatui::{
 };
 
 use crate::app::{App, Msg, TrackType};
-use crate::engine::MASTER_TRACK;
 use crate::pattern::{Selection, StepSize, INPUTS_PER_STEP};
 use crate::sampler;
 use crate::view::{Focus, ProjectTreeState, View};
@@ -271,7 +270,7 @@ fn handle_command_line_input(app: &App, view: &mut View, key: KeyEvent) -> Resul
                 }
                 "create-track" => {
                     let idx = view.editor.cursor.track();
-                    Ok(CreateTrack(idx, MASTER_TRACK, TrackType::Instrument, None))
+                    Ok(CreateTrack(idx, None, TrackType::Instrument, None))
                 }
                 "rename-track" => {
                     let idx = view.editor.cursor.track();
@@ -328,35 +327,35 @@ fn handle_project_tree_input(app: &App, view: &mut View, key: KeyEvent) -> Resul
             };
         }
         ProjectTreeState::InstrumentParams(instr_idx) => {
-            let node_idx = app.instruments[instr_idx].as_ref().unwrap().node_index;
+            let node_id = app.instruments[instr_idx].as_ref().unwrap().node_id;
             match key.code {
                 KeyCode::Char('u') => {
                     view.project_tree_state = ProjectTreeState::Instruments;
                 }
                 KeyCode::Char('[') => {
                     return Ok(ParamInc(
-                        node_idx,
+                        node_id,
                         view.params.selected().unwrap(),
                         StepSize::Default,
                     ))
                 }
                 KeyCode::Char(']') => {
                     return Ok(ParamDec(
-                        node_idx,
+                        node_id,
                         view.params.selected().unwrap(),
                         StepSize::Default,
                     ))
                 }
                 KeyCode::Char('{') => {
                     return Ok(ParamInc(
-                        node_idx,
+                        node_id,
                         view.params.selected().unwrap(),
                         StepSize::Large,
                     ))
                 }
                 KeyCode::Char('}') => {
                     return Ok(ParamDec(
-                        node_idx,
+                        node_id,
                         view.params.selected().unwrap(),
                         StepSize::Large,
                     ))

@@ -277,7 +277,7 @@ fn render_project_tree(app: &App, view: &mut View, f: &mut Frame, area: Rect) {
         }
         ProjectTreeState::InstrumentParams(instrument_idx) => {
             let instrument = app.instruments[instrument_idx].as_ref().unwrap();
-            let params = app.params(instrument.node_index);
+            let params = app.params(instrument.node_id);
 
             // TODO: maybe use a table here to align values?
             let w = (area.width as f32 * 0.6) as usize;

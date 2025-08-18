@@ -422,12 +422,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3f9eec918d3f24069decb9af1554cad7c880e2da24a9afd88aca000531ab82c1"
 
 [[package]]
-name = "get-many-mut"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3e1027d8e4b47b5b11577479d544a4054c29e692115c5c6e782c29f37066a2f7"
-
-[[package]]
 name = "getrandom"
 version = "0.2.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1112,6 +1106,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "slotmap"
+version = "1.0.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dbff4acf519f630b3a3ddcfaea6c06b42174d9a44bc70c620e9ed1649d58b82a"
+dependencies = [
+ "version_check",
+]
+
+[[package]]
 name = "smallvec"
 version = "1.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1266,13 +1269,13 @@ dependencies = [
  "camino",
  "cpal",
  "crossterm",
- "get-many-mut",
  "hound",
  "lru 0.8.1",
  "param_derive",
  "rand",
  "ratatui",
  "ringbuf",
+ "slotmap",
  "triple_buffer",
 ]
 

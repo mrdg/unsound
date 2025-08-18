@@ -26,8 +26,8 @@ atomic_float = "0.1.0"
 lru = "0.8.1"
 ratatui = "0.29.0"
 crossterm = "0.28.1"
-get-many-mut = "0.1.0"
 bit-set = "0.8.0"
+slotmap = "1.0.7"
 
 [features]
 
