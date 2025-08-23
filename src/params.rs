@@ -1,6 +1,6 @@
 use crate::pattern::StepSize;
 
-use atomic_float::AtomicF64;
+use atomic_float::AtomicF32;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
@@ -10,41 +10,41 @@ pub trait Params {
 }
 
 pub struct Param {
-    current: AtomicF64,
-    mapped: AtomicF64,
-    target: AtomicF64,
+    current: AtomicF32,
+    mapped: AtomicF32,
+    target: AtomicF32,
     info: ParamInfo,
 }
 
 impl Param {
-    pub fn new(value: f64, info: ParamInfo) -> Self {
+    pub fn new(value: f32, info: ParamInfo) -> Self {
         Self {
-            target: AtomicF64::new(value),
-            current: AtomicF64::new(value),
-            mapped: AtomicF64::new((info.map_value)(value)),
+            target: AtomicF32::new(value),
+            current: AtomicF32::new(value),
+            mapped: AtomicF32::new((info.map_value)(value)),
             info,
         }
     }
 
     pub fn incr(&self, step_size: StepSize) {
         let step = self.info.step(step_size);
-        let new = f64::min(self.info.max, self.target() + step);
+        let new = f32::min(self.info.max, self.target() + step);
         self.set(new);
     }
 
     pub fn decr(&self, step_size: StepSize) {
         let step = self.info.step(step_size);
-        let new = f64::max(self.info.min, self.target() - step);
+        let new = f32::max(self.info.min, self.target() - step);
         self.set(new);
     }
 
-    pub fn set(&self, value: f64) {
+    pub fn set(&self, value: f32) {
         if value >= self.info.min && value <= self.info.max {
             self.target.store(value, Ordering::Relaxed);
         }
     }
 
-    pub fn value(&self) -> f64 {
+    pub fn value(&self) -> f32 {
         let current = self.current.load(Ordering::Relaxed);
         let mut mapped = self.mapped.load(Ordering::Relaxed);
         let target = self.target.load(Ordering::Relaxed);
@@ -59,7 +59,7 @@ impl Param {
         mapped
     }
 
-    pub fn target(&self) -> f64 {
+    pub fn target(&self) -> f32 {
         self.target.load(Ordering::Relaxed)
     }
 
@@ -85,19 +85,19 @@ impl Param {
 
 pub struct ParamInfo {
     name: String,
-    min: f64,
-    max: f64,
-    steps: [f64; 2],
+    min: f32,
+    max: f32,
+    steps: [f32; 2],
     format_value: Box<FormatValue>,
     map_value: Box<MapValue>,
     smoothing: Smoothing,
-    true_value: f64,
+    true_value: f32,
 }
 
 impl ParamInfo {
-    const DEFAULT_STEPS: [f64; 2] = [0.01, 0.1];
+    const DEFAULT_STEPS: [f32; 2] = [0.01, 0.1];
 
-    pub fn new<T: Into<f64>>(name: &str, min: T, max: T) -> Self {
+    pub fn new<T: Into<f32>>(name: &str, min: T, max: T) -> Self {
         Self {
             name: String::from(name),
             min: min.into(),
@@ -110,20 +110,20 @@ impl ParamInfo {
         }
     }
 
-    pub fn bool(name: &str, true_value: f64) -> Self {
+    pub fn bool(name: &str, true_value: f32) -> Self {
         let mut info = Self::new(name, 0.0, 1.0).with_steps([1.0, 1.0]);
         info.true_value = true_value;
         info
     }
 
-    pub fn with_steps<T: Into<f64>>(mut self, steps: [T; 2]) -> Self {
+    pub fn with_steps<T: Into<f32>>(mut self, steps: [T; 2]) -> Self {
         self.steps = steps.map(|s| s.into());
         self
     }
 
     pub fn with_formatter<F>(mut self, format: F) -> Self
     where
-        F: Fn(f64) -> String,
+        F: Fn(f32) -> String,
         F: Send + Sync + 'static,
     {
         self.format_value = Box::new(format);
@@ -132,7 +132,7 @@ impl ParamInfo {
 
     pub fn with_map<F>(mut self, map: F) -> Self
     where
-        F: Fn(f64) -> f64,
+        F: Fn(f32) -> f32,
         F: Send + Sync + 'static,
     {
         self.map_value = Box::new(map);
@@ -144,35 +144,35 @@ impl ParamInfo {
         self
     }
 
-    fn step(&self, step_size: StepSize) -> f64 {
+    fn step(&self, step_size: StepSize) -> f32 {
         self.steps[step_size as usize]
     }
 }
 
-type FormatValue = dyn Fn(f64) -> String + Send + Sync;
-type MapValue = dyn Fn(f64) -> f64 + Send + Sync;
+type FormatValue = dyn Fn(f32) -> String + Send + Sync;
+type MapValue = dyn Fn(f32) -> f32 + Send + Sync;
 
-pub fn db_to_amp(db: f64) -> f64 {
-    f64::powf(10.0, db / 20.0)
+pub fn db_to_amp(db: f32) -> f32 {
+    f32::powf(10.0, db / 20.0)
 }
 
-fn format_default(v: f64) -> String {
+fn format_default(v: f32) -> String {
     format!("{:.2}", v)
 }
 
-pub fn format_millis(v: f64) -> String {
+pub fn format_millis(v: f32) -> String {
     format!("{}ms", v)
 }
 
 pub enum Smoothing {
-    Exp(f64),
+    Exp(f32),
     None,
 }
 
 impl Smoothing {
-    pub fn exp(ms: f64, sample_rate: f64) -> Self {
+    pub fn exp(ms: f32, sample_rate: f32) -> Self {
         let num_samples = (sample_rate * ms / 1000.0).round();
-        let rate = 0.0001f64.powf(1.0 / num_samples);
+        let rate = 0.001f32.powf(1.0 / num_samples);
         Self::Exp(rate)
     }
 
@@ -180,11 +180,11 @@ impl Smoothing {
         Self::exp(5.0, crate::SAMPLE_RATE)
     }
 
-    fn next(&self, current: f64, target: f64) -> f64 {
+    fn next(&self, current: f32, target: f32) -> f32 {
         match self {
             Self::Exp(rate) => {
                 let mut current = rate * current + (1.0 - rate) * target;
-                if (target - current).abs() < 0.0001 {
+                if (target - current).abs() < 0.001 {
                     current = target;
                 }
                 current
@@ -258,7 +258,7 @@ mod tests {
         param.incr(StepSize::Default);
         assert_eq!(target, param.target());
 
-        let mut previous = f64::MIN;
+        let mut previous = f32::MIN;
         for _ in 0..(sample_rate * time / 1000.0).round() as usize {
             let current = param.value();
             assert!(current > previous);

@@ -637,7 +637,7 @@ pub enum Msg {
     RenameTrack(usize, Option<String>),
     ParamInc(NodeId, usize, StepSize),
     ParamDec(NodeId, usize, StepSize),
-    ParamSet(NodeId, usize, f64),
+    ParamSet(NodeId, usize, f32),
     ToggleMute(usize),
     TrackVolumeIncr(usize),
     TrackVolumeDecr(usize),

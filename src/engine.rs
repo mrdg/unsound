@@ -267,7 +267,7 @@ impl TrackParams {
         Self {
             volume: Param::new(
                 -6.0,
-                ParamInfo::new("Volume", -60, 3)
+                ParamInfo::new("Volume", -60.0, 3.0)
                     .with_steps([0.25, 1.0])
                     .with_smoothing(params::Smoothing::exp_default())
                     .with_map(params::db_to_amp),
@@ -302,8 +302,8 @@ impl Plugin for Track {
 
     fn process(&mut self, ctx: &mut ProcessContext) -> ProcessStatus {
         for mut frame in ctx.buffers() {
-            let volume = self.params.volume.value() as f32;
-            let mute = self.params.mute.value() as f32;
+            let volume = self.params.volume.value();
+            let mute = self.params.mute.value();
             let output = *frame.input * volume * mute;
             self.rms.add_frame(output);
             frame.write(output);
@@ -332,11 +332,11 @@ impl Node {
             inner,
             volume: Param::new(
                 1.0,
-                ParamInfo::new("Volume", 0, 1).with_smoothing(params::Smoothing::exp_default()),
+                ParamInfo::new("Volume", 0.0, 1.0).with_smoothing(params::Smoothing::exp_default()),
             ),
             mix: Param::new(
                 1.0,
-                ParamInfo::new("Mix", 0, 1).with_smoothing(params::Smoothing::exp_default()),
+                ParamInfo::new("Mix", 0.0, 1.0).with_smoothing(params::Smoothing::exp_default()),
             ),
         }
     }
@@ -431,7 +431,7 @@ impl<'a> ProcessContext<'a> {
         let buf = self.buffers.get_mut(buffer).unwrap_or(self.discard);
 
         buf.frames[range.clone()].iter_mut().map(|o| {
-            let volume = self.volume.map_or(1.0, |v| v.value() as f32);
+            let volume = self.volume.map_or(1.0, |v| v.value());
             FrameRef::new(&Stereo::ZERO, o, 1.0, volume)
         })
     }
@@ -448,8 +448,8 @@ impl<'a> ProcessContext<'a> {
         let output = output.frames[..self.num_frames].iter_mut();
 
         iter::zip(input, output).map(|(i, o)| {
-            let volume = self.volume.map_or(1.0, |v| v.value() as f32);
-            let mix = self.mix.map_or(1.0, |v| v.value() as f32);
+            let volume = self.volume.map_or(1.0, |v| v.value());
+            let mix = self.mix.map_or(1.0, |v| v.value());
             FrameRef::new(i, o, mix, volume)
         })
     }

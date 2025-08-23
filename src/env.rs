@@ -10,23 +10,23 @@ pub enum State {
 }
 
 // Amount by which we overshoot the target amplitude in the envelope
-const EPS: f64 = 0.001;
+const EPS: f32 = 0.001;
 
 // Envelope based on https://mu.krj.st/adsr/
 #[derive(Debug)]
 pub struct Envelope {
     pub state: State,
 
-    prev_gate: f64,
-    out: f64,
-    pole: f64,
-    target: f64,
-    sustain_val: f64,
+    prev_gate: f32,
+    out: f32,
+    pole: f32,
+    target: f32,
+    sustain_val: f32,
 
-    attack: f64,
-    decay: f64,
-    sustain: f64,
-    release: f64,
+    attack: f32,
+    decay: f32,
+    sustain: f32,
+    release: f32,
 }
 
 impl Envelope {
@@ -52,7 +52,7 @@ impl Envelope {
         self.release = adsr.release;
     }
 
-    pub fn value(&mut self, gate: f64) -> f64 {
+    pub fn value(&mut self, gate: f32) -> f32 {
         let sustain = self.sustain_value();
 
         if gate > self.prev_gate {
@@ -99,12 +99,12 @@ impl Envelope {
         self.out
     }
 
-    fn sustain_value(&mut self) -> f64 {
+    fn sustain_value(&mut self) -> f32 {
         self.sustain_val = 0.001 * self.sustain + 0.999 * self.sustain_val;
         self.sustain_val
     }
 }
 
-fn ratio_to_pole(msec: f64, ratio: f64) -> f64 {
-    f64::powf(ratio, 1.0 / ((msec / 1000.0) * SAMPLE_RATE))
+fn ratio_to_pole(msec: f32, ratio: f32) -> f32 {
+    f32::powf(ratio, 1.0 / ((msec / 1000.0) * SAMPLE_RATE))
 }

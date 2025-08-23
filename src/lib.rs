@@ -13,7 +13,7 @@ pub mod view;
 
 // Keep https://github.com/RustAudio/cpal/issues/508 in mind
 // when changing the sample rate.
-pub const SAMPLE_RATE: f64 = 44100.0;
+pub const SAMPLE_RATE: f32 = 44100.0;
 pub const FRAMES_PER_BUFFER: usize = 128;
 
 // Allocate a larger buffer size, because sometimes cpal requests more than the

@@ -21,8 +21,8 @@ pub struct DelayParams {
 impl Default for DelayParams {
     fn default() -> Self {
         Self {
-            dry_mix: Param::new(0.8, ParamInfo::new("Dry Mix", 0, 1)),
-            wet_mix: Param::new(0.8, ParamInfo::new("Wet Mix", 0, 1)),
+            dry_mix: Param::new(0.8, ParamInfo::new("Dry Mix", 0.0, 1.0)),
+            wet_mix: Param::new(0.8, ParamInfo::new("Wet Mix", 0.0, 1.0)),
         }
     }
 }
@@ -61,7 +61,7 @@ impl Plugin for Delay {
 
             let dry = self.params.dry_mix.value();
             let wet = self.params.wet_mix.value();
-            let output = *frame.input * dry as f32 + delayed_sample * wet as f32;
+            let output = *frame.input * dry + delayed_sample * wet;
             frame.write(output);
 
             self.buffer[self.write_pos] = *frame.input + delayed_sample * FEEDBACK;

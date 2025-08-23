@@ -33,10 +33,10 @@ impl SamplerParams {
 }
 #[derive(Clone)]
 pub struct Adsr {
-    pub attack: f64,
-    pub decay: f64,
-    pub sustain: f64,
-    pub release: f64,
+    pub attack: f32,
+    pub decay: f32,
+    pub sustain: f32,
+    pub release: f32,
 }
 
 impl Default for SamplerParams {
@@ -44,21 +44,21 @@ impl Default for SamplerParams {
         Self {
             env_attack: Param::new(
                 1.0,
-                ParamInfo::new("Envelope Attack", 1, 20_000)
-                    .with_steps([5, 100])
+                ParamInfo::new("Envelope Attack", 1.0, 20_000.0)
+                    .with_steps([5.0, 100.0])
                     .with_formatter(format_millis),
             ),
             env_decay: Param::new(
                 200.0,
-                ParamInfo::new("Envelope Decay", 5, 20_000)
-                    .with_steps([5, 100])
+                ParamInfo::new("Envelope Decay", 5.0, 20_000.0)
+                    .with_steps([5.0, 100.0])
                     .with_formatter(format_millis),
             ),
             env_sustain: Param::new(1.0, ParamInfo::new("Envelope Sustain", 0.01, 1.0)),
             env_release: Param::new(
                 100.0,
-                ParamInfo::new("Envelope Release", 5, 20_000)
-                    .with_steps([5, 100])
+                ParamInfo::new("Envelope Release", 5.0, 20_000.0)
+                    .with_steps([5.0, 100.0])
                     .with_formatter(format_millis),
             ),
         }
@@ -74,7 +74,7 @@ pub struct Voice {
     velocity: f32,
     env: Envelope,
     sample: Arc<Buffer>,
-    gate: f64,
+    gate: f32,
 }
 
 #[derive(PartialEq, Eq, Debug)]
@@ -118,7 +118,7 @@ impl Voice {
                 output += sample[pos + 1] * weight;
             }
 
-            frame.write(output * self.velocity * self.env.value(self.gate) as f32);
+            frame.write(output * self.velocity * self.env.value(self.gate));
             self.position += self.pitch_ratio;
             if self.position >= sample.len() as f32 {
                 self.state = VoiceState::Free;
@@ -236,12 +236,11 @@ impl Sampler {
             voice.state = VoiceState::Busy(buffer);
             voice.env = Envelope::new(self.params.adsr());
             voice.pitch = pitch;
-            voice.velocity =
-                params::db_to_amp(map(velocity.into(), (0.0, 127.0), (-60.0, 0.0))) as f32;
+            voice.velocity = params::db_to_amp(map(velocity.into(), (0.0, 127.0), (-60.0, 0.0)));
 
             let pitch = pitch as i8 - ROOT_PITCH as i8;
-            voice.pitch_ratio = f32::powf(2., pitch as f32 / 12.0)
-                * (self.sound.sample_rate as f32 / SAMPLE_RATE as f32);
+            voice.pitch_ratio =
+                f32::powf(2., pitch as f32 / 12.0) * (self.sound.sample_rate as f32 / SAMPLE_RATE);
             voice.position = self.sound.offset as f32;
         } else {
             eprintln!("dropped event");
@@ -308,7 +307,7 @@ impl Plugin for Sampler {
     }
 }
 
-fn map(v: f64, from: (f64, f64), to: (f64, f64)) -> f64 {
+fn map(v: f32, from: (f32, f32), to: (f32, f32)) -> f32 {
     (v - from.0) * (to.1 - to.0) / (from.1 - from.0) + to.0
 }
 
